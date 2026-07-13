@@ -4,24 +4,39 @@ CREATE TABLE IF NOT EXISTS users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
   employee_code TEXT NOT NULL UNIQUE,
-  pin_hash TEXT NOT NULL,
+  pin_hash TEXT NOT NULL DEFAULT '',
   role TEXT NOT NULL DEFAULT 'cleaner',
   active BOOLEAN NOT NULL DEFAULT TRUE,
   avatar_url TEXT,
+  source TEXT NOT NULL DEFAULT 'local',
+  external_id TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS external_id TEXT;
+ALTER TABLE users ALTER COLUMN pin_hash SET DEFAULT '';
+
 CREATE TABLE IF NOT EXISTS conversations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('group','direct','room','department')),
+  type TEXT NOT NULL,
   department TEXT,
   unit TEXT,
   created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+  employee_owner_id UUID REFERENCES users(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS employee_owner_id UUID REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE conversations DROP CONSTRAINT IF EXISTS conversations_type_check;
+ALTER TABLE conversations ADD CONSTRAINT conversations_type_check
+  CHECK (type IN ('group','direct','room','department','admin_employee'));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_employee_owner
+  ON conversations(employee_owner_id)
+  WHERE employee_owner_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS conversation_members (
   conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
