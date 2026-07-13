@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b141a">
+  <title>417 Maid Chat</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section id="loginView" class="login-view">
+    <form id="loginForm" class="login-card">
+      <div class="brand">💬</div>
+      <h1>417 Maid Chat</h1>
+      <p>Comunicación interna en tiempo real.</p>
+      <input id="codeInput" placeholder="Código" autocomplete="username" required>
+      <input id="pinInput" type="password" inputmode="numeric" placeholder="PIN" autocomplete="current-password" required>
+      <button type="submit">Entrar</button>
+      <div id="loginStatus" class="status"></div>
+    </form>
+  </section>
+
+  <main id="appView" class="app hidden">
+    <aside class="sidebar">
+      <header class="sidebar-head">
+        <div>
+          <strong>417 Maid Chat</strong>
+          <small id="userLabel"></small>
+        </div>
+        <button id="logoutBtn" class="icon-btn" title="Salir">↪</button>
+      </header>
+      <div class="search-wrap"><input id="conversationSearch" placeholder="Buscar chat"></div>
+      <div id="conversationList" class="conversation-list"></div>
+    </aside>
+
+    <section class="chat-panel">
+      <header class="chat-head">
+        <button id="backBtn" class="mobile-back">‹</button>
+        <div>
+          <strong id="conversationTitle">Selecciona un chat</strong>
+          <small id="typingLabel"></small>
+        </div>
+        <button id="callBtn" class="icon-btn" title="Llamadas en próxima fase">☎</button>
+      </header>
+      <div id="messageList" class="message-list">
+        <div class="empty">Selecciona una conversación.</div>
+      </div>
+      <form id="composer" class="composer hidden">
+        <label class="attach-btn" title="Adjuntar archivo">＋<input id="fileInput" type="file" hidden></label>
+        <textarea id="messageInput" rows="1" placeholder="Escribe un mensaje"></textarea>
+        <button type="submit" class="send-btn">➤</button>
+      </form>
+      <div id="uploadStatus" class="upload-status"></div>
+    </section>
+  </main>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

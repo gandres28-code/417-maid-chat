@@ -1,58 +1,71 @@
-# 417 Maid Chat
+# 417 Maid Chat v1
 
-Aplicación separada del 417 Maid OS actual. Esta primera versión incluye:
+Aplicación independiente de chat en tiempo real para GitHub + Render.
 
-- Login independiente por código y contraseña
+## Incluido
+
+- Login por código y PIN
 - PostgreSQL
 - Conversaciones y grupos
-- Mensajes en tiempo real con Socket.IO
-- Presencia y eventos de escritura preparados
-- Subidas directas a almacenamiento S3-compatible mediante URL firmada
-- Endpoint de tokens para llamadas LiveKit
-- Interpretación de mensajes con IA y bandeja `ai_actions`
-- Sin cambios en el servidor principal de 417 Maid OS
+- Mensajes Socket.IO en tiempo real
+- Presencia e indicador de escritura
+- Historial paginado
+- Fotos, videos, audios y archivos mediante Cloudinary
+- Interpretación estructurada por IA
+- Bandeja API de acciones para administradores
+- Base separada de 417 Maid OS
 
-## Arranque local
+## Subir a GitHub
+
+Sube **todo el contenido de esta carpeta** a la raíz del repositorio `417-maid-chat`.
+`server.js` y `package.json` deben quedar en la raíz.
+
+## Render
+
+1. Crea una base de datos PostgreSQL en Render.
+2. Crea un Web Service conectado al repositorio `417-maid-chat`.
+3. Build Command:
 
 ```bash
-cp .env.example .env
-docker compose up -d
-npm install
-npm run db:init
-npm run dev
+npm install && npm run db:init
 ```
 
-Abre `http://localhost:4100`.
+4. Start Command:
 
-Login de demostración:
+```bash
+npm start
+```
+
+5. Variables mínimas:
 
 ```text
-Código: 0001
-Contraseña: 1234
+DATABASE_URL=<Internal Database URL de Render PostgreSQL>
+DATABASE_SSL=false
+JWT_SECRET=<cadena aleatoria larga>
+ADMIN_NAME=Andres
+ADMIN_CODE=0001
+ADMIN_PIN=1234
 ```
 
-## MinIO local
-
-Consola: `http://localhost:9001`
+6. Variables opcionales para archivos:
 
 ```text
-Usuario: minioadmin
-Contraseña: minioadmin
+CLOUDINARY_CLOUD_NAME=
+CLOUDINARY_API_KEY=
+CLOUDINARY_API_SECRET=
 ```
 
-Crea un bucket llamado `maid-chat` y permite lectura pública solo para desarrollo. En producción usa Cloudflare R2 y URLs firmadas.
+7. Variables opcionales para IA:
 
-## Variables de producción
+```text
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4o-mini
+```
 
-Configura PostgreSQL administrado, Cloudflare R2, LiveKit y OpenAI usando `.env.example`.
+## Prueba
 
-## Siguiente etapa
+Abre la URL de Render e inicia sesión con el código y PIN configurados.
 
-1. Panel administrativo de acciones de IA
-2. Chats directos y creación de grupos
-3. Fotos, video, audio y documentos desde la interfaz
-4. Reacciones, respuestas, entregado y leído
-5. Llamadas y videollamadas dentro de la interfaz
-6. Notificaciones push
-7. Pruebas de carga y despliegue horizontal
-8. Integración posterior con 417 Maid OS y HotSOS
+## Importante
+
+Esta primera versión deja la app principal intacta. Las llamadas de voz/video se conectarán después con LiveKit. Para soportar miles de usuarios concurrentes se añadirá Redis y escalado horizontal después de validar este flujo base.
