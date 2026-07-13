@@ -139,7 +139,7 @@ async function ensureEmployeeAdminConversation(employee) {
     const created = await client.query(
       `INSERT INTO conversations (name,type,department,created_by,employee_owner_id)
        VALUES ($1,'admin_employee','Administración',$2,$2)
-       ON CONFLICT (employee_owner_id)
+       ON CONFLICT (employee_owner_id) WHERE employee_owner_id IS NOT NULL
        DO UPDATE SET name=EXCLUDED.name, updated_at=NOW()
        RETURNING *`,
       [`${employee.name} · Administración`, employee.id]
