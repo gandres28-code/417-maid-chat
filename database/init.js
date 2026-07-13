@@ -9,62 +9,66 @@ function bool(value, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(String(value).toLowerCase());
 }
 
-async function main() {
-  if (!process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL is required');
+function adminConfigs() {
+  const admins = [];
+
+  for (let index = 1; index <= 3; index += 1) {
+    const code = String(process.env[`ADMIN_${index}_CODE`] || '').trim();
+    if (!code) continue;
+
+    admins.push({
+      name: String(process.env[`ADMIN_${index}_NAME`] || `Admin ${index}`).trim(),
+      code,
+      pin: String(process.env[`ADMIN_${index}_PIN`] || '1234'),
+    });
   }
+
+  if (!admins.length) {
+    admins.push({
+      name: process.env.ADMIN_NAME || 'Andres',
+      code: process.env.ADMIN_CODE || '0001',
+      pin: process.env.ADMIN_PIN || '1234',
+    });
+  }
+
+  return admins;
+}
+
+async function main() {
+  if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required');
 
   const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
-    ssl: bool(process.env.DATABASE_SSL, true)
-      ? { rejectUnauthorized: false }
-      : false,
+    ssl: bool(process.env.DATABASE_SSL, true) ? { rejectUnauthorized: false } : false,
   });
 
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await pool.query(schema);
 
-  const name = process.env.ADMIN_NAME || 'Andres';
-  const code = process.env.ADMIN_CODE || '0001';
-  const pin = process.env.ADMIN_PIN || '1234';
-  const pinHash = await bcrypt.hash(pin, 12);
+  for (const admin of adminConfigs()) {
+    const pinHash = await bcrypt.hash(admin.pin, 12);
 
-  const userResult = await pool.query(
-    `INSERT INTO users (name, employee_code, pin_hash, role, active)
-     VALUES ($1, $2, $3, 'admin', TRUE)
-     ON CONFLICT (employee_code)
-     DO UPDATE SET name = EXCLUDED.name, pin_hash = EXCLUDED.pin_hash, role = 'admin', active = TRUE
-     RETURNING id`,
-    [name, code, pinHash]
-  );
-
-  const adminId = userResult.rows[0].id;
-
-  const conversationResult = await pool.query(
-    `INSERT INTO conversations (name, type, department, created_by)
-     SELECT 'General', 'group', 'General', $1
-     WHERE NOT EXISTS (SELECT 1 FROM conversations WHERE name = 'General' AND type = 'group')
-     RETURNING id`,
-    [adminId]
-  );
-
-  let generalId = conversationResult.rows[0]?.id;
-  if (!generalId) {
-    const existing = await pool.query(
-      `SELECT id FROM conversations WHERE name = 'General' AND type = 'group' LIMIT 1`
+    const result = await pool.query(
+      `INSERT INTO users (name,employee_code,pin_hash,role,active,source)
+       VALUES ($1,$2,$3,'admin',TRUE,'local-admin')
+       ON CONFLICT (employee_code)
+       DO UPDATE SET name=EXCLUDED.name,pin_hash=EXCLUDED.pin_hash,role='admin',active=TRUE,source='local-admin',updated_at=NOW()
+       RETURNING id`,
+      [admin.name, admin.code, pinHash]
     );
-    generalId = existing.rows[0].id;
+
+    await pool.query(
+      `INSERT INTO conversation_members (conversation_id,user_id,member_role)
+       SELECT c.id,$1,'admin'
+       FROM conversations c
+       WHERE c.type='admin_employee'
+       ON CONFLICT (conversation_id,user_id)
+       DO UPDATE SET member_role='admin'`,
+      [result.rows[0].id]
+    );
   }
 
-  await pool.query(
-    `INSERT INTO conversation_members (conversation_id, user_id, member_role)
-     VALUES ($1, $2, 'admin')
-     ON CONFLICT DO NOTHING`,
-    [generalId, adminId]
-  );
-
-  console.log('Database initialized.');
-  console.log(`Admin login: ${code} / ${pin}`);
+  console.log('Database initialized for employee-admin chats.');
   await pool.end();
 }
 
