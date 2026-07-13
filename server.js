@@ -46,6 +46,135 @@ function publicUser(row) {
   };
 }
 
+function normalizeRole(role) {
+  return String(role || '').trim().toLowerCase();
+}
+
+function isAdminRole(role) {
+  return ['admin','manager','owner','company owner','operations','dispatch'].includes(normalizeRole(role));
+}
+
+function configuredAdminCodes() {
+  return new Set(
+    String(process.env.ADMIN_CODES || process.env.ADMIN_CODE || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+  );
+}
+
+async function fetchOSUser(code) {
+  const baseUrl = String(process.env.OS_BASE_URL || 'https://bot-dispatch.onrender.com').replace(/\/$/, '');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const response = await fetch(`${baseUrl}/login-role?code=${encodeURIComponent(code)}`, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.ok || data.active === false) {
+      const error = new Error(data.message || 'Código no encontrado en 417 Maid OS');
+      error.status = response.status || 401;
+      throw error;
+    }
+
+    const adminCodes = configuredAdminCodes();
+    const role = adminCodes.has(String(data.code || code)) ? 'admin' : String(data.role || 'cleaner');
+
+    return {
+      externalId: data.id || null,
+      name: String(data.name || code).trim(),
+      code: String(data.code || code).trim(),
+      role,
+      active: data.active !== false,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function upsertOSUser(osUser) {
+  const result = await pool.query(
+    `INSERT INTO users (name, employee_code, pin_hash, role, active, source, external_id)
+     VALUES ($1,$2,'', $3,$4,'417-maid-os',$5)
+     ON CONFLICT (employee_code)
+     DO UPDATE SET
+       name=EXCLUDED.name,
+       role=EXCLUDED.role,
+       active=EXCLUDED.active,
+       source='417-maid-os',
+       external_id=COALESCE(EXCLUDED.external_id, users.external_id),
+       updated_at=NOW()
+     RETURNING *`,
+    [osUser.name, osUser.code, osUser.role, osUser.active, osUser.externalId]
+  );
+  return result.rows[0];
+}
+
+async function ensureAdminMemberships(adminId) {
+  await pool.query(
+    `INSERT INTO conversation_members (conversation_id,user_id,member_role)
+     SELECT c.id,$1,'admin'
+     FROM conversations c
+     WHERE c.type='admin_employee'
+     ON CONFLICT (conversation_id,user_id)
+     DO UPDATE SET member_role='admin'`,
+    [adminId]
+  );
+}
+
+async function ensureEmployeeAdminConversation(employee) {
+  if (isAdminRole(employee.role)) {
+    await ensureAdminMemberships(employee.id);
+    return null;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const created = await client.query(
+      `INSERT INTO conversations (name,type,department,created_by,employee_owner_id)
+       VALUES ($1,'admin_employee','Administración',$2,$2)
+       ON CONFLICT (employee_owner_id)
+       DO UPDATE SET name=EXCLUDED.name, updated_at=NOW()
+       RETURNING *`,
+      [`${employee.name} · Administración`, employee.id]
+    );
+
+    const conversation = created.rows[0];
+
+    await client.query(
+      `INSERT INTO conversation_members (conversation_id,user_id,member_role)
+       VALUES ($1,$2,'employee')
+       ON CONFLICT (conversation_id,user_id)
+       DO UPDATE SET member_role='employee'`,
+      [conversation.id, employee.id]
+    );
+
+    await client.query(
+      `INSERT INTO conversation_members (conversation_id,user_id,member_role)
+       SELECT $1,u.id,'admin'
+       FROM users u
+       WHERE u.active=TRUE AND LOWER(u.role) IN ('admin','manager','owner','company owner','operations','dispatch')
+       ON CONFLICT (conversation_id,user_id)
+       DO UPDATE SET member_role='admin'`,
+      [conversation.id]
+    );
+
+    await client.query('COMMIT');
+    return conversation;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function isConversationMember(conversationId, userId) {
   const result = await pool.query(
     `SELECT 1 FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`,
@@ -110,26 +239,24 @@ app.get('/health', async (_req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const code = String(req.body.code || '').trim();
-    const pin = String(req.body.pin || '').trim();
 
-    if (!code || !pin) {
-      return res.status(400).json({ ok: false, message: 'Código y PIN requeridos' });
+    if (!code) {
+      return res.status(400).json({ ok: false, message: 'Código requerido' });
     }
 
-    const result = await pool.query(
-      `SELECT * FROM users WHERE employee_code = $1 AND active = TRUE LIMIT 1`,
-      [code]
-    );
-    const user = result.rows[0];
+    const osUser = await fetchOSUser(code);
+    const user = await upsertOSUser(osUser);
 
-    if (!user || !(await bcrypt.compare(pin, user.pin_hash))) {
-      return res.status(401).json({ ok: false, message: 'Código o PIN incorrecto' });
+    if (!user.active) {
+      return res.status(403).json({ ok: false, message: 'Empleado inactivo' });
     }
+
+    await ensureEmployeeAdminConversation(user);
 
     res.json({ ok: true, token: signUser(user), user: publicUser(user) });
   } catch (error) {
     console.error('Login error:', error.message);
-    res.status(500).json({ ok: false, message: 'No se pudo iniciar sesión' });
+    res.status(error.status || 401).json({ ok: false, message: error.message || 'No se pudo iniciar sesión' });
   }
 });
 
@@ -144,29 +271,39 @@ app.get('/api/me', authMiddleware, async (req, res) => {
 
 app.get('/api/conversations', authMiddleware, async (req, res) => {
   const result = await pool.query(
-    `SELECT c.id,c.name,c.type,c.department,c.unit,c.updated_at,
+    `SELECT c.id,
+            CASE WHEN $2 = FALSE THEN 'Administración' ELSE COALESCE(owner.name,c.name) END AS name,
+            c.type,c.department,c.unit,c.updated_at,c.employee_owner_id,
             COALESCE(last_message.body,'') AS last_message,
-            last_message.created_at AS last_message_at
+            last_message.created_at AS last_message_at,
+            owner.role AS employee_role,
+            owner.avatar_url AS employee_avatar
      FROM conversations c
      JOIN conversation_members cm ON cm.conversation_id=c.id AND cm.user_id=$1
+     LEFT JOIN users owner ON owner.id=c.employee_owner_id
      LEFT JOIN LATERAL (
        SELECT body,created_at FROM messages m
        WHERE m.conversation_id=c.id AND m.deleted_at IS NULL
        ORDER BY created_at DESC LIMIT 1
      ) last_message ON TRUE
+     WHERE c.type='admin_employee'
      ORDER BY COALESCE(last_message.created_at,c.updated_at) DESC`,
-    [req.auth.sub]
+    [req.auth.sub, isAdminRole(req.auth.role)]
   );
   res.json({ ok: true, conversations: result.rows });
 });
 
 app.post('/api/conversations', authMiddleware, async (req, res) => {
+  if (!isAdminRole(req.auth.role)) {
+    return res.status(403).json({ ok: false, message: 'Solo administración puede crear conversaciones' });
+  }
+
   const name = String(req.body.name || '').trim();
   const type = String(req.body.type || 'group').trim();
   const memberIds = Array.isArray(req.body.memberIds) ? req.body.memberIds : [];
 
   if (!name) return res.status(400).json({ ok: false, message: 'Nombre requerido' });
-  if (!['group','direct','room','department'].includes(type)) {
+  if (!['group','direct','room','department','admin_employee'].includes(type)) {
     return res.status(400).json({ ok: false, message: 'Tipo inválido' });
   }
 
@@ -255,6 +392,22 @@ app.post('/api/upload', authMiddleware, upload.single('file'), async (req, res) 
     console.error('Upload error:', error.message);
     res.status(500).json({ ok: false, message: 'No se pudo subir el archivo' });
   }
+});
+
+app.post('/api/admin/sync-memberships', authMiddleware, async (req, res) => {
+  if (!isAdminRole(req.auth.role)) {
+    return res.status(403).json({ ok: false, message: 'Sin acceso' });
+  }
+
+  const admins = await pool.query(
+    `SELECT id FROM users WHERE active=TRUE AND LOWER(role) IN ('admin','manager','owner','company owner','operations','dispatch')`
+  );
+
+  for (const admin of admins.rows) {
+    await ensureAdminMemberships(admin.id);
+  }
+
+  res.json({ ok: true, admins: admins.rowCount });
 });
 
 app.get('/api/admin/ai-actions', authMiddleware, async (req, res) => {
