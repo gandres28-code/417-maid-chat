@@ -25,7 +25,7 @@ function removeUpload(id){const item=state.uploads.find(x=>x.id===id);if(item?.p
 function retryUpload(id){const item=state.uploads.find(x=>x.id===id);if(!item)return;item.status='pending';item.error='';item.progress=0;renderUploadQueue();uploadPending()}
 let uploading=false;async function uploadPending(){if(uploading)return;uploading=true;try{for(const item of state.uploads){if(item.status!=='pending')continue;item.status='uploading';renderUploadQueue();try{item.attachment=await uploadFile(item);item.status='ready';item.progress=100}catch(err){item.status='error';item.error=err.message}renderUploadQueue()}}finally{uploading=false}}
 function uploadFile(item){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST','/api/upload');xhr.setRequestHeader('Authorization',`Bearer ${state.token}`);xhr.upload.onprogress=e=>{if(e.lengthComputable){item.progress=Math.round(e.loaded/e.total*100);renderUploadQueue()}};xhr.onload=()=>{let d={};try{d=JSON.parse(xhr.responseText||'{}')}catch{}if(xhr.status>=200&&xhr.status<300&&d.ok)resolve(d.attachment);else reject(new Error(d.message||`Error ${xhr.status}`))};xhr.onerror=()=>reject(new Error('Se perdió la conexión durante la subida'));const fd=new FormData();fd.append('file',item.file);xhr.send(fd)})}
-['cameraInput','mediaInput','audioInput','documentInput','videoFallbackInput'].forEach(id=>$(id).addEventListener('change',e=>{chooseFiles(e.target.files);e.target.value='';$('attachMenu').classList.add('hidden')}));
+['cameraInput','mediaInput','documentInput'].forEach(id=>$(id).addEventListener('change',e=>{chooseFiles(e.target.files);e.target.value='';$('attachMenu').classList.add('hidden')}));
 $('attachMenuBtn').onclick=()=>{if(!state.active)return;$('attachMenu').classList.toggle('hidden')};document.addEventListener('click',e=>{if(!$('attachMenu').contains(e.target)&&e.target!==$('attachMenuBtn'))$('attachMenu').classList.add('hidden')});
 function openViewer(type,url){$('viewerContent').innerHTML=type==='image'?`<img src="${escapeHtml(url)}" alt="imagen">`:`<video controls autoplay src="${escapeHtml(url)}"></video>`;$('mediaViewer').classList.remove('hidden')}
 function closeViewer(){$('mediaViewer').classList.add('hidden');$('viewerContent').innerHTML=''}$('closeViewer').onclick=closeViewer;$('mediaViewer').onclick=e=>{if(e.target===$('mediaViewer'))closeViewer()};
@@ -33,6 +33,7 @@ $('backBtn').onclick=()=>$('appView').classList.remove('chat-open');$('callBtn')
 
 // =========================================================
 // GRABADOR DE AUDIO TIPO WHATSAPP
+// Al tocar Enviar, el audio se sube y se manda automáticamente.
 // =========================================================
 const recorderState={
   audioRecorder:null,
@@ -40,13 +41,8 @@ const recorderState={
   audioChunks:[],
   audioStartedAt:0,
   audioTimerId:null,
-  videoRecorder:null,
-  videoStream:null,
-  videoChunks:[],
-  videoStartedAt:0,
-  videoTimerId:null,
-  facingMode:'environment',
-  videoMime:''
+  audioCancelled:false,
+  audioSending:false
 };
 
 function formatTimer(ms){
@@ -66,19 +62,8 @@ function bestAudioMime(){
   return candidates.find(type=>window.MediaRecorder?.isTypeSupported?.(type))||'';
 }
 
-function bestVideoMime(){
-  const candidates=[
-    'video/mp4;codecs=h264,aac',
-    'video/mp4',
-    'video/webm;codecs=vp9,opus',
-    'video/webm;codecs=vp8,opus',
-    'video/webm'
-  ];
-  return candidates.find(type=>window.MediaRecorder?.isTypeSupported?.(type))||'';
-}
-
-function extensionForMime(mime,fallback){
-  if(String(mime).includes('mp4'))return'mp4';
+function extensionForMime(mime,fallback='webm'){
+  if(String(mime).includes('mp4'))return'm4a';
   if(String(mime).includes('ogg'))return'ogg';
   if(String(mime).includes('webm'))return'webm';
   return fallback;
@@ -88,10 +73,48 @@ function stopTracks(stream){
   stream?.getTracks?.().forEach(track=>track.stop());
 }
 
+async function uploadAndSendRecordedAudio(file){
+  if(!state.active)throw new Error('Abre una conversación primero');
+
+  const item={
+    id:crypto.randomUUID(),
+    file,
+    status:'uploading',
+    progress:0,
+    error:'',
+    attachment:null,
+    preview:''
+  };
+
+  state.uploads.push(item);
+  renderUploadQueue();
+  $('uploadStatus').textContent='Enviando audio...';
+
+  try{
+    item.attachment=await uploadFile(item);
+    item.status='ready';
+    item.progress=100;
+    renderUploadQueue();
+
+    await sendSocketMessage('',item.attachment);
+
+    state.uploads=state.uploads.filter(x=>x.id!==item.id);
+    renderUploadQueue();
+    $('uploadStatus').textContent='';
+  }catch(error){
+    item.status='error';
+    item.error=error.message||'No se pudo enviar el audio';
+    renderUploadQueue();
+    $('uploadStatus').textContent=item.error;
+    throw error;
+  }
+}
+
 async function startAudioRecording(){
-  if(!state.active)return;
+  if(!state.active||recorderState.audioSending)return;
+
   if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
-    $('audioInput').click();
+    $('uploadStatus').textContent='Este navegador no permite grabar audio directamente.';
     return;
   }
 
@@ -108,15 +131,23 @@ async function startAudioRecording(){
 
     recorderState.audioChunks=[];
     const mime=bestAudioMime();
-    const options=mime?{mimeType:mime,audioBitsPerSecond:128000}:{audioBitsPerSecond:128000};
+    const options=mime
+      ?{mimeType:mime,audioBitsPerSecond:128000}
+      :{audioBitsPerSecond:128000};
+
     recorderState.audioRecorder=new MediaRecorder(recorderState.audioStream,options);
+
     recorderState.audioRecorder.ondataavailable=e=>{
       if(e.data?.size)recorderState.audioChunks.push(e.data);
     };
+
     recorderState.audioRecorder.onstop=async()=>{
       clearInterval(recorderState.audioTimerId);
-      const actualMime=recorderState.audioRecorder?.mimeType||mime||'audio/webm';
+
+      const recorder=recorderState.audioRecorder;
+      const actualMime=recorder?.mimeType||mime||'audio/webm';
       const blob=new Blob(recorderState.audioChunks,{type:actualMime});
+
       stopTracks(recorderState.audioStream);
       recorderState.audioStream=null;
       recorderState.audioRecorder=null;
@@ -125,21 +156,38 @@ async function startAudioRecording(){
 
       if(recorderState.audioCancelled||!blob.size){
         recorderState.audioCancelled=false;
+        recorderState.audioSending=false;
+        $('finishAudioBtn').disabled=false;
         return;
       }
 
-      const ext=extensionForMime(actualMime,'webm');
-      const file=new File([blob],`audio-${Date.now()}.${ext}`,{type:actualMime,lastModified:Date.now()});
-      chooseFiles([file]);
+      const ext=extensionForMime(actualMime);
+      const file=new File(
+        [blob],
+        `audio-${Date.now()}.${ext}`,
+        {type:actualMime,lastModified:Date.now()}
+      );
+
+      try{
+        await uploadAndSendRecordedAudio(file);
+      }finally{
+        recorderState.audioSending=false;
+        $('finishAudioBtn').disabled=false;
+      }
     };
 
     recorderState.audioCancelled=false;
+    recorderState.audioSending=false;
     recorderState.audioStartedAt=Date.now();
     recorderState.audioRecorder.start(250);
+
     $('audioRecorderBar').classList.remove('hidden');
     $('audioTimer').textContent='00:00';
+
     recorderState.audioTimerId=setInterval(()=>{
-      $('audioTimer').textContent=formatTimer(Date.now()-recorderState.audioStartedAt);
+      $('audioTimer').textContent=formatTimer(
+        Date.now()-recorderState.audioStartedAt
+      );
     },250);
   }catch(error){
     $('uploadStatus').textContent=error?.name==='NotAllowedError'
@@ -150,169 +198,21 @@ async function startAudioRecording(){
 
 function finishAudioRecording(cancel=false){
   const recorder=recorderState.audioRecorder;
-  if(!recorder)return;
+  if(!recorder||recorder.state==='inactive')return;
+
   recorderState.audioCancelled=cancel;
-  if(recorder.state!=='inactive')recorder.stop();
+  recorderState.audioSending=!cancel;
+
+  if(!cancel){
+    $('finishAudioBtn').disabled=true;
+    $('uploadStatus').textContent='Preparando audio...';
+  }
+
+  recorder.stop();
 }
 
 $('voiceRecordBtn').onclick=startAudioRecording;
 $('finishAudioBtn').onclick=()=>finishAudioRecording(false);
 $('cancelAudioBtn').onclick=()=>finishAudioRecording(true);
-
-// =========================================================
-// GRABADOR DE VIDEO HD
-// =========================================================
-async function openVideoRecorder(){
-  if(!state.active)return;
-
-  if(!navigator.mediaDevices?.getUserMedia||!window.MediaRecorder){
-    $('videoFallbackInput').click();
-    return;
-  }
-
-  $('attachMenu').classList.add('hidden');
-  $('videoRecorderModal').classList.remove('hidden');
-  await startVideoPreview();
-}
-
-async function startVideoPreview(){
-  stopTracks(recorderState.videoStream);
-
-  const highQualityConstraints={
-    audio:{
-      echoCancellation:true,
-      noiseSuppression:true,
-      autoGainControl:true,
-      sampleRate:{ideal:48000}
-    },
-    video:{
-      facingMode:{ideal:recorderState.facingMode},
-      width:{ideal:3840,min:1280},
-      height:{ideal:2160,min:720},
-      frameRate:{ideal:30,min:24},
-      aspectRatio:{ideal:16/9}
-    }
-  };
-
-  try{
-    recorderState.videoStream=await navigator.mediaDevices.getUserMedia(highQualityConstraints);
-  }catch{
-    try{
-      recorderState.videoStream=await navigator.mediaDevices.getUserMedia({
-        audio:true,
-        video:{
-          facingMode:{ideal:recorderState.facingMode},
-          width:{ideal:1920},
-          height:{ideal:1080},
-          frameRate:{ideal:30}
-        }
-      });
-    }catch(error){
-      closeVideoRecorder();
-      $('uploadStatus').textContent=error?.name==='NotAllowedError'
-        ?'Permite acceso a cámara y micrófono para grabar video.'
-        :(error.message||'No se pudo abrir la cámara');
-      return;
-    }
-  }
-
-  $('videoPreview').srcObject=recorderState.videoStream;
-  const track=recorderState.videoStream.getVideoTracks()[0];
-  const settings=track?.getSettings?.()||{};
-  const width=settings.width||'';
-  const height=settings.height||'';
-  $('videoQualityLabel').textContent=width&&height
-    ?`${width} × ${height} · calidad original`
-    :'Máxima calidad disponible';
-}
-
-function closeVideoRecorder(){
-  if(recorderState.videoRecorder&&recorderState.videoRecorder.state!=='inactive'){
-    recorderState.videoCancelled=true;
-    recorderState.videoRecorder.stop();
-  }
-  stopTracks(recorderState.videoStream);
-  recorderState.videoStream=null;
-  $('videoPreview').srcObject=null;
-  $('videoRecorderModal').classList.add('hidden');
-  clearInterval(recorderState.videoTimerId);
-  $('videoTimer').textContent='00:00';
-  $('startVideoBtn').classList.remove('hidden');
-  $('stopVideoBtn').classList.add('hidden');
-}
-
-function startVideoRecording(){
-  if(!recorderState.videoStream)return;
-
-  recorderState.videoChunks=[];
-  recorderState.videoCancelled=false;
-  const mime=bestVideoMime();
-  recorderState.videoMime=mime;
-  const options=mime
-    ?{mimeType:mime,videoBitsPerSecond:20000000,audioBitsPerSecond:192000}
-    :{videoBitsPerSecond:20000000,audioBitsPerSecond:192000};
-
-  try{
-    recorderState.videoRecorder=new MediaRecorder(recorderState.videoStream,options);
-  }catch{
-    recorderState.videoRecorder=new MediaRecorder(recorderState.videoStream);
-  }
-
-  recorderState.videoRecorder.ondataavailable=e=>{
-    if(e.data?.size)recorderState.videoChunks.push(e.data);
-  };
-
-  recorderState.videoRecorder.onstop=()=>{
-    clearInterval(recorderState.videoTimerId);
-    const actualMime=recorderState.videoRecorder?.mimeType||recorderState.videoMime||'video/webm';
-    const blob=new Blob(recorderState.videoChunks,{type:actualMime});
-    const cancelled=recorderState.videoCancelled;
-
-    stopTracks(recorderState.videoStream);
-    recorderState.videoStream=null;
-    recorderState.videoRecorder=null;
-    recorderState.videoChunks=[];
-    $('videoPreview').srcObject=null;
-    $('videoRecorderModal').classList.add('hidden');
-    $('startVideoBtn').classList.remove('hidden');
-    $('stopVideoBtn').classList.add('hidden');
-    $('videoTimer').textContent='00:00';
-
-    if(cancelled||!blob.size)return;
-
-    const ext=extensionForMime(actualMime,'webm');
-    const file=new File([blob],`video-hd-${Date.now()}.${ext}`,{type:actualMime,lastModified:Date.now()});
-    chooseFiles([file]);
-  };
-
-  recorderState.videoStartedAt=Date.now();
-  recorderState.videoRecorder.start(500);
-  $('startVideoBtn').classList.add('hidden');
-  $('stopVideoBtn').classList.remove('hidden');
-  recorderState.videoTimerId=setInterval(()=>{
-    $('videoTimer').textContent=formatTimer(Date.now()-recorderState.videoStartedAt);
-  },250);
-}
-
-function stopVideoRecording(){
-  if(recorderState.videoRecorder?.state!=='inactive'){
-    recorderState.videoRecorder.stop();
-  }
-}
-
-async function switchCamera(){
-  if(recorderState.videoRecorder?.state==='recording')return;
-  recorderState.facingMode=recorderState.facingMode==='environment'?'user':'environment';
-  await startVideoPreview();
-}
-
-$('recordVideoBtn').onclick=openVideoRecorder;
-$('startVideoBtn').onclick=startVideoRecording;
-$('stopVideoBtn').onclick=stopVideoRecording;
-$('switchCameraBtn').onclick=switchCamera;
-$('closeVideoRecorder').onclick=closeVideoRecorder;
-$('videoRecorderModal').onclick=e=>{
-  if(e.target===$('videoRecorderModal'))closeVideoRecorder();
-};
 
 bootstrap();
