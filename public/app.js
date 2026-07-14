@@ -211,8 +211,92 @@ function finishAudioRecording(cancel=false){
   recorder.stop();
 }
 
-$('voiceRecordBtn').onclick=startAudioRecording;
-$('finishAudioBtn').onclick=()=>finishAudioRecording(false);
-$('cancelAudioBtn').onclick=()=>finishAudioRecording(true);
 
+// Experiencia de audio tipo WhatsApp:
+// mantener presionado para grabar, soltar para enviar,
+// deslizar a la izquierda para cancelar y hacia arriba para bloquear.
+let voiceGesture={
+  active:false,
+  locked:false,
+  startX:0,
+  startY:0,
+  pointerId:null,
+  starting:false
+};
+
+async function beginVoiceGesture(event){
+  if(!state.active||recorderState.audioSending||voiceGesture.starting)return;
+  voiceGesture.starting=true;
+  voiceGesture.active=true;
+  voiceGesture.locked=false;
+  voiceGesture.pointerId=event.pointerId;
+  voiceGesture.startX=event.clientX;
+  voiceGesture.startY=event.clientY;
+
+  try{
+    $('voiceRecordBtn').setPointerCapture?.(event.pointerId);
+    await startAudioRecording();
+  }finally{
+    voiceGesture.starting=false;
+  }
+}
+
+function moveVoiceGesture(event){
+  if(!voiceGesture.active||voiceGesture.locked)return;
+  const dx=event.clientX-voiceGesture.startX;
+  const dy=event.clientY-voiceGesture.startY;
+
+  if(dx<-85){
+    voiceGesture.active=false;
+    finishAudioRecording(true);
+    $('uploadStatus').textContent='Audio cancelado';
+    return;
+  }
+
+  if(dy<-85){
+    voiceGesture.locked=true;
+    $('audioRecorderBar').classList.add('locked');
+    $('uploadStatus').textContent='Grabación bloqueada. Toca Enviar cuando termines.';
+  }
+}
+
+function endVoiceGesture(){
+  if(!voiceGesture.active)return;
+  voiceGesture.active=false;
+  if(!voiceGesture.locked){
+    finishAudioRecording(false);
+  }
+}
+
+const voiceButton=$('voiceRecordBtn');
+voiceButton.onpointerdown=event=>{
+  event.preventDefault();
+  beginVoiceGesture(event);
+};
+voiceButton.onpointermove=moveVoiceGesture;
+voiceButton.onpointerup=endVoiceGesture;
+voiceButton.onpointercancel=()=>{
+  if(voiceGesture.active&&!voiceGesture.locked){
+    voiceGesture.active=false;
+    finishAudioRecording(true);
+  }
+};
+voiceButton.onclick=event=>event.preventDefault();
+
+$('finishAudioBtn').onclick=()=>{
+  voiceGesture.active=false;
+  voiceGesture.locked=false;
+  $('audioRecorderBar').classList.remove('locked');
+  finishAudioRecording(false);
+};
+$('cancelAudioBtn').onclick=()=>{
+  voiceGesture.active=false;
+  voiceGesture.locked=false;
+  $('audioRecorderBar').classList.remove('locked');
+  finishAudioRecording(true);
+};
+
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+}
 bootstrap();
