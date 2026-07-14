@@ -366,3 +366,15 @@ body.recording-audio .composer{opacity:.45;pointer-events:none}
   .recorder-bar{gap:6px}
   .recorder-bar .finish-record{width:42px;height:42px;padding:0}
 }
+
+.app-version{
+  display:inline-block;
+  margin-left:8px;
+  padding:2px 7px;
+  border-radius:999px;
+  background:#00a884;
+  color:white;
+  font-size:10px;
+  font-weight:900;
+  vertical-align:middle;
+}
