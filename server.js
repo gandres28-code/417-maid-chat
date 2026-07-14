@@ -360,20 +360,73 @@ app.get('/api/conversations/:id/messages', authMiddleware, async (req, res) => {
   res.json({ ok: true, messages: result.rows.reverse() });
 });
 
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 100 * 1024 * 1024);
+const MAX_FILES_PER_BATCH = Number(process.env.MAX_FILES_PER_BATCH || 10);
+const ALLOWED_UPLOAD_MIME_PREFIXES = ['image/', 'video/', 'audio/'];
+const ALLOWED_UPLOAD_MIME_TYPES = new Set([
+  'application/pdf',
+  'text/plain',
+  'text/csv',
+  'application/zip',
+  'application/x-zip-compressed',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
+
+function isAllowedUpload(file) {
+  const mime = String(file?.mimetype || '').toLowerCase();
+  return ALLOWED_UPLOAD_MIME_PREFIXES.some((prefix) => mime.startsWith(prefix)) || ALLOWED_UPLOAD_MIME_TYPES.has(mime);
+}
+
+function cloudinaryResourceType(mime) {
+  if (String(mime).startsWith('image/')) return 'image';
+  if (String(mime).startsWith('video/') || String(mime).startsWith('audio/')) return 'video';
+  return 'raw';
+}
+
+app.get('/api/upload/config', authMiddleware, (_req, res) => {
+  res.json({
+    ok: true,
+    maxUploadBytes: MAX_UPLOAD_BYTES,
+    maxFilesPerBatch: MAX_FILES_PER_BATCH,
+    cloudinaryConfigured: Boolean(process.env.CLOUDINARY_CLOUD_NAME),
+  });
+});
+
 app.post('/api/upload', authMiddleware, upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ ok: false, message: 'Archivo requerido' });
-  if (!process.env.CLOUDINARY_CLOUD_NAME) {
+  if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
     return res.status(503).json({ ok: false, message: 'Cloudinary no está configurado' });
+  }
+  if (req.file.size > MAX_UPLOAD_BYTES) {
+    return res.status(413).json({ ok: false, message: `El archivo supera el límite de ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB` });
+  }
+  if (!isAllowedUpload(req.file)) {
+    return res.status(415).json({ ok: false, message: 'Este tipo de archivo no está permitido' });
   }
 
   try {
-    const resourceType = req.file.mimetype.startsWith('video/') || req.file.mimetype.startsWith('audio/')
-      ? 'video'
-      : req.file.mimetype.startsWith('image/') ? 'image' : 'raw';
+    const resourceType = cloudinaryResourceType(req.file.mimetype);
+    const publicIdBase = `${Date.now()}-${String(req.file.originalname || 'file').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80)}`;
 
     const result = await new Promise((resolve, reject) => {
+      const options = {
+        folder: `417-maid-chat/${new Date().toISOString().slice(0, 7)}`,
+        resource_type: resourceType,
+        public_id: publicIdBase,
+        overwrite: false,
+        unique_filename: true,
+        use_filename: false,
+      };
+
+      if (resourceType === 'image') {
+        options.transformation = [{ quality: 'auto', fetch_format: 'auto' }];
+      }
+
       const stream = cloudinary.uploader.upload_stream(
-        { folder: '417-maid-chat', resource_type: resourceType },
+        options,
         (error, uploaded) => error ? reject(error) : resolve(uploaded)
       );
       stream.end(req.file.buffer);
@@ -386,12 +439,23 @@ app.post('/api/upload', authMiddleware, upload.single('file'), async (req, res) 
         name: req.file.originalname,
         mime: req.file.mimetype,
         size: req.file.size,
+        width: result.width || null,
+        height: result.height || null,
+        duration: result.duration || null,
+        resourceType: result.resource_type || resourceType,
       },
     });
   } catch (error) {
     console.error('Upload error:', error.message);
     res.status(500).json({ ok: false, message: 'No se pudo subir el archivo' });
   }
+});
+
+app.use((error, _req, res, next) => {
+  if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ ok: false, message: `El archivo supera el límite de ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB` });
+  }
+  next(error);
 });
 
 app.post('/api/admin/sync-memberships', authMiddleware, async (req, res) => {
