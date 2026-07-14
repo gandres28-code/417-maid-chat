@@ -1,21 +1,186 @@
-const state={token:localStorage.getItem('chatToken')||'',user:null,socket:null,conversations:[],active:null,messages:[],uploads:[],typingTimer:null,uploadConfig:{maxUploadBytes:100*1024*1024,maxFilesPerBatch:10}};
+const state={
+  token:localStorage.getItem('chatToken')||'',
+  user:null,
+  socket:null,
+  conversations:[],
+  active:null,
+  messages:[],
+  uploads:[],
+  typingTimer:null,
+  uploadConfig:{maxUploadBytes:100*1024*1024,maxFilesPerBatch:10},
+  replyTo:null,
+  reactionTarget:null,
+  onlineUsers:new Set(),
+  aiActions:[],
+  aiFilter:'pending'
+};
 const $=id=>document.getElementById(id);
 function api(path,options={}){return fetch(path,{...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(state.token?{Authorization:`Bearer ${state.token}`}:{}) ,...(options.headers||{})}}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.message||`Error ${r.status}`);return d})}
 function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function formatBytes(bytes){const n=Number(bytes||0);if(n<1024)return`${n} B`;if(n<1024*1024)return`${(n/1024).toFixed(1)} KB`;return`${(n/1024/1024).toFixed(1)} MB`}
-function showApp(){$('loginView').classList.add('hidden');$('appView').classList.remove('hidden');$('userLabel').textContent=`${state.user.name} · ${state.user.role}`}
+function isAdmin(){
+  return ['admin','manager','owner','company owner','operations','dispatch'].includes(String(state.user?.role||'').toLowerCase());
+}
+
+function showApp(){
+  $('loginView').classList.add('hidden');
+  $('appView').classList.remove('hidden');
+  $('userLabel').textContent=`${state.user.name} · ${state.user.role}`;
+  $('aiPanel').classList.toggle('hidden',!isAdmin());
+  if(isAdmin())loadAiActions();
+}
 function logout(){localStorage.removeItem('chatToken');location.reload()}
 async function bootstrap(){if(!state.token)return;try{const d=await api('/api/me');state.user=d.user;showApp();connectSocket();await Promise.all([loadConversations(),loadUploadConfig()])}catch{logout()}}
 async function loadUploadConfig(){try{const d=await api('/api/upload/config');state.uploadConfig=d}catch{}}
 $('loginForm').addEventListener('submit',async e=>{e.preventDefault();$('loginStatus').textContent='Entrando...';try{const d=await api('/api/auth/login',{method:'POST',body:JSON.stringify({code:$('codeInput').value.trim()})});state.token=d.token;state.user=d.user;localStorage.setItem('chatToken',d.token);$('loginStatus').textContent='';showApp();connectSocket();await Promise.all([loadConversations(),loadUploadConfig()])}catch(err){$('loginStatus').textContent=err.message}})
 $('logoutBtn').onclick=logout;
 async function loadConversations(){const d=await api('/api/conversations');state.conversations=d.conversations;renderConversations()}
-function renderConversations(){const q=$('conversationSearch').value.toLowerCase();$('conversationList').innerHTML=state.conversations.filter(c=>c.name.toLowerCase().includes(q)).map(c=>`<div class="conversation ${state.active?.id===c.id?'active':''}" data-id="${c.id}"><div class="conversation-top"><strong>${escapeHtml(c.name)}</strong><small>${c.last_message_at?new Date(c.last_message_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):''}</small></div><p>${escapeHtml(c.last_message||c.department||c.type)}</p></div>`).join('');document.querySelectorAll('.conversation').forEach(el=>el.onclick=()=>openConversation(el.dataset.id))}
+function renderConversations(){
+  const q=$('conversationSearch').value.toLowerCase();
+  $('conversationList').innerHTML=state.conversations
+    .filter(c=>c.name.toLowerCase().includes(q))
+    .map(c=>{
+      const online=c.employee_owner_id&&state.onlineUsers.has(String(c.employee_owner_id));
+      return `<div class="conversation ${state.active?.id===c.id?'active':''}" data-id="${c.id}">
+        <div class="conversation-top">
+          <strong><span class="presence-dot ${online?'online':''}"></span>${escapeHtml(c.name)}</strong>
+          <small>${c.last_message_at?new Date(c.last_message_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):''}</small>
+        </div>
+        <p>${escapeHtml(c.last_message||c.department||c.type)}</p>
+      </div>`;
+    }).join('');
+  document.querySelectorAll('.conversation').forEach(el=>el.onclick=()=>openConversation(el.dataset.id));
+}
 $('conversationSearch').oninput=renderConversations;
-async function openConversation(id){state.active=state.conversations.find(c=>c.id===id);$('conversationTitle').textContent=state.active.name;$('composer').classList.remove('hidden');$('appView').classList.add('chat-open');renderConversations();state.socket?.emit('conversation:join',{conversationId:id});const d=await api(`/api/conversations/${id}/messages`);state.messages=d.messages;renderMessages()}
+async function openConversation(id){
+  state.active=state.conversations.find(c=>c.id===id);
+  $('conversationTitle').textContent=state.active.name;
+  $('composer').classList.remove('hidden');
+  $('appView').classList.add('chat-open');
+  renderConversations();
+  state.socket?.emit('conversation:join',{conversationId:id});
+  const d=await api(`/api/conversations/${id}/messages`);
+  state.messages=d.messages;
+  renderMessages();
+  markActiveConversationRead();
+}
 function attachmentHtml(m){if(!m.attachment_url)return'';const url=escapeHtml(m.attachment_url);if(m.message_type==='image')return`<button class="media-open" data-type="image" data-url="${url}"><img src="${url}" alt="imagen" loading="lazy"></button>`;if(m.message_type==='video')return`<video controls preload="metadata" src="${url}"></video>`;if(m.message_type==='audio')return`<audio controls preload="metadata" src="${url}"></audio>`;return`<a class="file-card" target="_blank" rel="noopener" href="${url}"><span>📎</span><div><strong>${escapeHtml(m.attachment_name||'Archivo')}</strong><small>${formatBytes(m.attachment_size)}</small></div></a>`}
-function renderMessages(){const list=$('messageList');list.innerHTML=state.messages.map(m=>`<article class="message ${m.sender_id===state.user.id?'mine':''}">${m.sender_id!==state.user.id?`<div class="message-name">${escapeHtml(m.sender_name||'Usuario')}</div>`:''}${attachmentHtml(m)}${m.body?`<div class="message-body">${escapeHtml(m.body)}</div>`:''}<div class="message-time">${new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div></article>`).join('');list.querySelectorAll('.media-open').forEach(btn=>btn.onclick=()=>openViewer(btn.dataset.type,btn.dataset.url));list.scrollTop=list.scrollHeight}
-function connectSocket(){if(state.socket)return;state.socket=io({auth:{token:state.token}});state.socket.on('message:new',m=>{const c=state.conversations.find(x=>x.id===m.conversation_id);if(c){c.last_message=m.body||m.attachment_name||'Archivo';c.last_message_at=m.created_at;renderConversations()}if(state.active?.id===m.conversation_id&&!state.messages.some(x=>x.id===m.id)){state.messages.push(m);renderMessages()}});state.socket.on('typing:update',e=>{if(e.conversationId!==state.active?.id||e.userId===state.user.id)return;$('typingLabel').textContent=e.typing?`${e.name} está escribiendo...`:''});state.socket.on('connect_error',e=>console.warn(e.message))}
+function messageStatusHtml(m){
+  if(m.sender_id!==state.user.id)return'';
+  if(Number(m.read_count||0)>0)return'<span class="checks read">✓✓</span>';
+  if(Number(m.delivered_count||0)>0)return'<span class="checks">✓✓</span>';
+  return'<span class="checks">✓</span>';
+}
+
+function replyHtml(m){
+  if(!m.reply_to)return'';
+  return `<button class="reply-quote" data-jump="${m.reply_to.id}">
+    <strong>${escapeHtml(m.reply_to.sender_name||'Mensaje')}</strong>
+    <span>${escapeHtml(m.reply_to.body||m.reply_to.attachment_name||m.reply_to.message_type||'Archivo')}</span>
+  </button>`;
+}
+
+function reactionsHtml(m){
+  const reactions=Array.isArray(m.reactions)?m.reactions:[];
+  if(!reactions.length)return'';
+  return `<div class="message-reactions">${reactions.map(r=>`<button data-message="${m.id}" data-emoji="${escapeHtml(r.emoji)}">${escapeHtml(r.emoji)} <span>${Number(r.count||0)}</span></button>`).join('')}</div>`;
+}
+
+function renderMessages(){
+  const list=$('messageList');
+  list.innerHTML=state.messages.map(m=>`<article id="message-${m.id}" class="message ${m.sender_id===state.user.id?'mine':''}" data-message-id="${m.id}">
+    ${m.sender_id!==state.user.id?`<div class="message-name">${escapeHtml(m.sender_name||'Usuario')}</div>`:''}
+    ${replyHtml(m)}
+    ${attachmentHtml(m)}
+    ${m.body?`<div class="message-body">${escapeHtml(m.body)}</div>`:''}
+    <div class="message-footer">
+      <button class="message-more" data-message-id="${m.id}" title="Opciones">⌄</button>
+      <span class="message-time">${new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
+      ${messageStatusHtml(m)}
+    </div>
+    ${reactionsHtml(m)}
+  </article>`).join('');
+
+  list.querySelectorAll('.media-open').forEach(btn=>btn.onclick=()=>openViewer(btn.dataset.type,btn.dataset.url));
+  list.querySelectorAll('.reply-quote').forEach(btn=>btn.onclick=()=>jumpToMessage(btn.dataset.jump));
+  list.querySelectorAll('.message-more').forEach(btn=>btn.onclick=e=>openMessageMenu(e,btn.dataset.messageId));
+  list.querySelectorAll('.message-reactions button').forEach(btn=>btn.onclick=()=>toggleReaction(btn.dataset.message,btn.dataset.emoji));
+  list.scrollTop=list.scrollHeight;
+}
+
+function jumpToMessage(id){
+  const el=$(`message-${id}`);
+  if(!el)return;
+  el.scrollIntoView({behavior:'smooth',block:'center'});
+  el.classList.add('message-highlight');
+  setTimeout(()=>el.classList.remove('message-highlight'),1500);
+}
+
+function connectSocket(){
+  if(state.socket)return;
+  state.socket=io({auth:{token:state.token}});
+
+  state.socket.on('message:new',m=>{
+    const c=state.conversations.find(x=>x.id===m.conversation_id);
+    if(c){
+      c.last_message=m.body||m.attachment_name||'Archivo';
+      c.last_message_at=m.created_at;
+      renderConversations();
+    }
+    if(state.active?.id===m.conversation_id&&!state.messages.some(x=>x.id===m.id)){
+      state.messages.push(m);
+      renderMessages();
+      markActiveConversationRead();
+    }
+  });
+
+  state.socket.on('message:receipt',receipt=>{
+    const m=state.messages.find(x=>x.id===receipt.messageId);
+    if(!m)return;
+    if(receipt.readAt)m.read_count=Number(m.read_count||0)+1;
+    else if(receipt.deliveredAt)m.delivered_count=Number(m.delivered_count||0)+1;
+    renderMessages();
+  });
+
+  state.socket.on('message:reactions',event=>{
+    const m=state.messages.find(x=>x.id===event.messageId);
+    if(!m)return;
+    m.reactions=event.reactions||[];
+    renderMessages();
+  });
+
+  state.socket.on('presence:update',event=>{
+    const key=String(event.userId);
+    if(event.online)state.onlineUsers.add(key);
+    else state.onlineUsers.delete(key);
+    renderConversations();
+  });
+
+  state.socket.on('typing:update',e=>{
+    if(e.conversationId!==state.active?.id||e.userId===state.user.id)return;
+    $('typingLabel').textContent=e.typing?`${e.name} está escribiendo...`:'';
+  });
+
+  state.socket.on('ai-action:new',action=>{
+    state.aiActions.unshift(action);
+    renderAiActions();
+  });
+
+  state.socket.on('ai-action:update',action=>{
+    const index=state.aiActions.findIndex(x=>x.id===action.id);
+    if(index>=0)state.aiActions[index]={...state.aiActions[index],...action};
+    renderAiActions();
+  });
+
+  state.socket.on('connect_error',e=>console.warn(e.message));
+}
+
+async function markActiveConversationRead(){
+  if(!state.active)return;
+  state.socket?.emit('conversation:read',{conversationId:state.active.id});
+  try{await api(`/api/conversations/${state.active.id}/read`,{method:'POST',body:'{}'})}catch{}
+}
+
 $('messageInput').addEventListener('input',()=>{if(!state.active||!state.socket)return;state.socket.emit('typing:start',{conversationId:state.active.id});clearTimeout(state.typingTimer);state.typingTimer=setTimeout(()=>state.socket.emit('typing:stop',{conversationId:state.active.id}),700)})
 function sendSocketMessage(body,attachment){return new Promise((resolve,reject)=>{state.socket.emit('message:send',{conversationId:state.active.id,body,attachment},r=>r?.ok?resolve(r):reject(new Error(r?.message||'No se pudo enviar')))} )}
 $('composer').addEventListener('submit',async e=>{e.preventDefault();if(!state.active)return;const body=$('messageInput').value.trim();const ready=state.uploads.filter(x=>x.status==='ready');if(!body&&!ready.length)return;const btn=e.submitter;btn.disabled=true;try{if(ready.length){for(let i=0;i<ready.length;i++){await sendSocketMessage(i===0?body:'',ready[i].attachment)}}else{await sendSocketMessage(body,null)}$('messageInput').value='';state.uploads=[];renderUploadQueue();state.socket.emit('typing:stop',{conversationId:state.active.id})}catch(err){$('uploadStatus').textContent=err.message}finally{btn.disabled=false}})
@@ -295,6 +460,216 @@ $('cancelAudioBtn').onclick=()=>{
   $('audioRecorderBar').classList.remove('locked');
   finishAudioRecording(true);
 };
+
+
+function setReply(message){
+  state.replyTo=message;
+  $('replyAuthor').textContent=message.sender_name||'Mensaje';
+  $('replyText').textContent=message.body||message.attachment_name||'Archivo';
+  $('replyPreview').classList.remove('hidden');
+  $('messageInput').focus();
+}
+
+function clearReply(){
+  state.replyTo=null;
+  $('replyPreview').classList.add('hidden');
+  $('replyAuthor').textContent='';
+  $('replyText').textContent='';
+}
+
+$('cancelReplyBtn').onclick=clearReply;
+
+function openMessageMenu(event,messageId){
+  event.stopPropagation();
+  state.reactionTarget=messageId;
+  const picker=$('reactionPicker');
+  picker.dataset.messageId=messageId;
+  picker.classList.remove('hidden');
+  picker.style.left=`${Math.min(window.innerWidth-300,Math.max(10,event.clientX-120))}px`;
+  picker.style.top=`${Math.max(10,event.clientY-70)}px`;
+}
+
+async function toggleReaction(messageId,emoji){
+  try{
+    const d=await api(`/api/messages/${messageId}/reactions`,{
+      method:'POST',
+      body:JSON.stringify({emoji})
+    });
+    const m=state.messages.find(x=>x.id===messageId);
+    if(m)m.reactions=d.reactions||[];
+    renderMessages();
+  }catch(error){
+    $('uploadStatus').textContent=error.message;
+  }
+}
+
+$('replyFromPickerBtn').onclick=()=>{
+  const messageId=$('reactionPicker').dataset.messageId||state.reactionTarget;
+  const message=state.messages.find(x=>x.id===messageId);
+  $('reactionPicker').classList.add('hidden');
+  if(message)setReply(message);
+};
+
+$('reactionPicker').querySelectorAll('[data-emoji]').forEach(btn=>{
+  btn.onclick=()=>{
+    const messageId=$('reactionPicker').dataset.messageId||state.reactionTarget;
+    $('reactionPicker').classList.add('hidden');
+    toggleReaction(messageId,btn.dataset.emoji);
+  };
+});
+
+document.addEventListener('click',event=>{
+  if(!$('reactionPicker').contains(event.target)){
+    $('reactionPicker').classList.add('hidden');
+  }
+});
+
+$('searchMessagesBtn').onclick=()=>{
+  if(!state.active)return;
+  $('searchModal').classList.remove('hidden');
+  $('messageSearchInput').value='';
+  $('messageSearchResults').innerHTML='';
+  $('messageSearchInput').focus();
+};
+
+$('closeSearchBtn').onclick=()=>$('searchModal').classList.add('hidden');
+
+let searchTimer=null;
+$('messageSearchInput').oninput=()=>{
+  clearTimeout(searchTimer);
+  searchTimer=setTimeout(searchMessages,250);
+};
+
+async function searchMessages(){
+  const q=$('messageSearchInput').value.trim();
+  if(!q||!state.active){
+    $('messageSearchResults').innerHTML='';
+    return;
+  }
+
+  try{
+    const d=await api(`/api/conversations/${state.active.id}/search?q=${encodeURIComponent(q)}`);
+    $('messageSearchResults').innerHTML=(d.messages||[]).map(m=>`
+      <button data-id="${m.id}">
+        <strong>${escapeHtml(m.sender_name||'Usuario')}</strong>
+        <span>${escapeHtml(m.body||m.attachment_name||'Archivo')}</span>
+        <small>${new Date(m.created_at).toLocaleString()}</small>
+      </button>
+    `).join('')||'<div class="empty">No se encontraron mensajes.</div>';
+
+    $('messageSearchResults').querySelectorAll('button').forEach(btn=>{
+      btn.onclick=()=>{
+        $('searchModal').classList.add('hidden');
+        jumpToMessage(btn.dataset.id);
+      };
+    });
+  }catch(error){
+    $('messageSearchResults').innerHTML=`<div class="empty">${escapeHtml(error.message)}</div>`;
+  }
+}
+
+function urlBase64ToUint8Array(base64String){
+  const padding='='.repeat((4-base64String.length%4)%4);
+  const base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');
+  const rawData=atob(base64);
+  return Uint8Array.from([...rawData].map(char=>char.charCodeAt(0)));
+}
+
+$('notificationsBtn').onclick=enablePushNotifications;
+
+async function enablePushNotifications(){
+  if(!('serviceWorker'in navigator)||!('PushManager'in window)){
+    $('uploadStatus').textContent='Este dispositivo no permite notificaciones push.';
+    return;
+  }
+
+  try{
+    const permission=await Notification.requestPermission();
+    if(permission!=='granted')throw new Error('Permiso de notificaciones no concedido');
+
+    const keyData=await api('/api/push/public-key');
+    if(!keyData.publicKey)throw new Error('Faltan las claves VAPID en Render');
+
+    const registration=await navigator.serviceWorker.ready;
+    let subscription=await registration.pushManager.getSubscription();
+
+    if(!subscription){
+      subscription=await registration.pushManager.subscribe({
+        userVisibleOnly:true,
+        applicationServerKey:urlBase64ToUint8Array(keyData.publicKey)
+      });
+    }
+
+    await api('/api/push/subscribe',{
+      method:'POST',
+      body:JSON.stringify({subscription})
+    });
+
+    $('uploadStatus').textContent='Notificaciones activadas';
+  }catch(error){
+    $('uploadStatus').textContent=error.message;
+  }
+}
+
+async function loadAiActions(){
+  if(!isAdmin())return;
+  try{
+    const d=await api('/api/admin/ai-actions');
+    state.aiActions=d.actions||[];
+    renderAiActions();
+  }catch(error){
+    console.warn(error.message);
+  }
+}
+
+function renderAiActions(){
+  if(!isAdmin())return;
+  const actions=state.aiActions.filter(a=>state.aiFilter==='all'||a.status===state.aiFilter);
+  $('aiActionList').innerHTML=actions.map(a=>`
+    <article class="ai-action ${escapeHtml(a.priority||'Normal').toLowerCase()}">
+      <div class="ai-action-head">
+        <strong>${escapeHtml(a.unit||'Sin unidad')}</strong>
+        <span>${escapeHtml(a.priority||'Normal')}</span>
+      </div>
+      <small>${escapeHtml(a.requester_name||'Empleado')} · ${escapeHtml(a.department||'Operations')}</small>
+      <p>${escapeHtml(a.summary||'')}</p>
+      <div class="ai-action-buttons">
+        <button data-status="approved" data-id="${a.id}">Aprobar</button>
+        <button data-status="completed" data-id="${a.id}">Completar</button>
+        <button data-status="dismissed" data-id="${a.id}">Descartar</button>
+      </div>
+    </article>
+  `).join('')||'<div class="empty">No hay acciones en esta bandeja.</div>';
+
+  $('aiActionList').querySelectorAll('[data-status]').forEach(btn=>{
+    btn.onclick=()=>updateAiAction(btn.dataset.id,btn.dataset.status);
+  });
+}
+
+async function updateAiAction(id,status){
+  try{
+    const d=await api(`/api/admin/ai-actions/${id}`,{
+      method:'PATCH',
+      body:JSON.stringify({status})
+    });
+    const index=state.aiActions.findIndex(x=>x.id===id);
+    if(index>=0)state.aiActions[index]=d.action;
+    renderAiActions();
+  }catch(error){
+    alert(error.message);
+  }
+}
+
+document.querySelectorAll('[data-ai-filter]').forEach(btn=>{
+  btn.onclick=()=>{
+    document.querySelectorAll('[data-ai-filter]').forEach(x=>x.classList.remove('active'));
+    btn.classList.add('active');
+    state.aiFilter=btn.dataset.aiFilter;
+    renderAiActions();
+  };
+});
+
+$('closeAiPanelBtn').onclick=()=>$('aiPanel').classList.toggle('hidden');
 
 if('serviceWorker' in navigator){
   window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
