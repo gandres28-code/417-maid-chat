@@ -22,10 +22,7 @@
   <main id="appView" class="app hidden">
     <aside class="sidebar">
       <header class="sidebar-head">
-        <div>
-          <strong>417 Maid Chat</strong>
-          <small id="userLabel"></small>
-        </div>
+        <div><strong>417 Maid Chat</strong><small id="userLabel"></small></div>
         <button id="logoutBtn" class="icon-btn" title="Salir">↪</button>
       </header>
       <div class="search-wrap"><input id="conversationSearch" placeholder="Buscar chat"></div>
@@ -35,23 +32,35 @@
     <section class="chat-panel">
       <header class="chat-head">
         <button id="backBtn" class="mobile-back">‹</button>
-        <div>
-          <strong id="conversationTitle">Selecciona un chat</strong>
-          <small id="typingLabel"></small>
-        </div>
+        <div><strong id="conversationTitle">Selecciona un chat</strong><small id="typingLabel"></small></div>
         <button id="callBtn" class="icon-btn" title="Llamadas en próxima fase">☎</button>
       </header>
-      <div id="messageList" class="message-list">
-        <div class="empty">Selecciona una conversación.</div>
-      </div>
+
+      <div id="messageList" class="message-list"><div class="empty">Selecciona una conversación.</div></div>
+
+      <section id="mediaQueue" class="media-queue hidden"></section>
+
       <form id="composer" class="composer hidden">
-        <label class="attach-btn" title="Adjuntar archivo">＋<input id="fileInput" type="file" hidden></label>
+        <button id="attachMenuBtn" type="button" class="attach-btn" title="Adjuntar">＋</button>
         <textarea id="messageInput" rows="1" placeholder="Escribe un mensaje"></textarea>
         <button type="submit" class="send-btn">➤</button>
       </form>
+
+      <div id="attachMenu" class="attach-menu hidden">
+        <label>📷 Cámara<input id="cameraInput" type="file" accept="image/*,video/*" capture="environment" multiple hidden></label>
+        <label>🖼 Fotos y videos<input id="mediaInput" type="file" accept="image/*,video/*" multiple hidden></label>
+        <label>🎤 Audio<input id="audioInput" type="file" accept="audio/*" multiple hidden></label>
+        <label>📎 Documento<input id="documentInput" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip" multiple hidden></label>
+      </div>
+
       <div id="uploadStatus" class="upload-status"></div>
     </section>
   </main>
+
+  <div id="mediaViewer" class="media-viewer hidden">
+    <button id="closeViewer" class="viewer-close">×</button>
+    <div id="viewerContent"></div>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="/app.js"></script>
