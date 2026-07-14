@@ -10,6 +10,7 @@ const { Server } = require('socket.io');
 const { pool } = require('./src/db');
 const { signUser, verifyToken, authMiddleware } = require('./src/auth');
 const { interpretMessage } = require('./src/ai');
+const webpush = require('web-push');
 
 const app = express();
 const server = http.createServer(app);
@@ -35,6 +36,21 @@ cloudinary.config({
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+const onlineUsers = new Map();
+
+function userIsOnline(userId) {
+  return Number(onlineUsers.get(String(userId)) || 0) > 0;
+}
+
+const VAPID_PUBLIC_KEY = String(process.env.VAPID_PUBLIC_KEY || '').trim();
+const VAPID_PRIVATE_KEY = String(process.env.VAPID_PRIVATE_KEY || '').trim();
+const VAPID_SUBJECT = String(process.env.VAPID_SUBJECT || 'mailto:admin@417maid.com').trim();
+
+if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+}
+
 
 function publicUser(row) {
   return {
@@ -181,6 +197,193 @@ async function isConversationMember(conversationId, userId) {
     [conversationId, userId]
   );
   return result.rowCount > 0;
+}
+
+
+async function hydrateMessage(message) {
+  if (!message) return message;
+
+  const [replyResult, reactionsResult, receiptsResult] = await Promise.all([
+    message.reply_to_id
+      ? pool.query(
+          `SELECT m.id,m.body,m.message_type,m.attachment_name,u.name AS sender_name
+           FROM messages m
+           LEFT JOIN users u ON u.id=m.sender_id
+           WHERE m.id=$1`,
+          [message.reply_to_id]
+        )
+      : Promise.resolve({ rows: [] }),
+    pool.query(
+      `SELECT emoji,COUNT(*)::int AS count,
+              BOOL_OR(user_id=$2) AS reacted_by_me
+       FROM message_reactions
+       WHERE message_id=$1
+       GROUP BY emoji
+       ORDER BY emoji`,
+      [message.id, message.current_user_id || null]
+    ),
+    pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE delivered_at IS NOT NULL)::int AS delivered_count,
+         COUNT(*) FILTER (WHERE read_at IS NOT NULL)::int AS read_count,
+         COUNT(*)::int AS receipt_count
+       FROM message_receipts
+       WHERE message_id=$1`,
+      [message.id]
+    ),
+  ]);
+
+  const receipts = receiptsResult.rows[0] || {};
+  return {
+    ...message,
+    reply_to: replyResult.rows[0] || null,
+    reactions: reactionsResult.rows || [],
+    delivered_count: Number(receipts.delivered_count || 0),
+    read_count: Number(receipts.read_count || 0),
+    receipt_count: Number(receipts.receipt_count || 0),
+  };
+}
+
+async function createReceipts(messageId, conversationId, senderId) {
+  await pool.query(
+    `INSERT INTO message_receipts(message_id,user_id,delivered_at,read_at)
+     SELECT $1,cm.user_id,
+            CASE WHEN $4 THEN NOW() ELSE NULL END,
+            NULL
+     FROM conversation_members cm
+     WHERE cm.conversation_id=$2 AND cm.user_id<>$3
+     ON CONFLICT (message_id,user_id) DO NOTHING`,
+    [messageId, conversationId, senderId, FALSE]
+  );
+}
+
+
+async function markMessageDeliveredToOnlineMembers(messageId, conversationId, senderId) {
+  const members = await pool.query(
+    `SELECT user_id
+     FROM conversation_members
+     WHERE conversation_id=$1 AND user_id<>$2`,
+    [conversationId, senderId]
+  );
+
+  const onlineIds = members.rows
+    .map(row => row.user_id)
+    .filter(userId => userIsOnline(userId));
+
+  if (!onlineIds.length) return;
+
+  const result = await pool.query(
+    `UPDATE message_receipts
+     SET delivered_at=COALESCE(delivered_at,NOW())
+     WHERE message_id=$1
+       AND user_id=ANY($2::uuid[])
+     RETURNING user_id,delivered_at`,
+    [messageId, onlineIds]
+  );
+
+  for (const row of result.rows) {
+    io.to(`conversation:${conversationId}`).emit('message:receipt', {
+      messageId,
+      userId: row.user_id,
+      deliveredAt: row.delivered_at,
+    });
+  }
+}
+
+async function markDeliveredForUser(userId) {
+  const result = await pool.query(
+    `UPDATE message_receipts mr
+     SET delivered_at=COALESCE(mr.delivered_at,NOW())
+     FROM messages m
+     WHERE mr.message_id=m.id
+       AND mr.user_id=$1
+       AND mr.delivered_at IS NULL
+     RETURNING mr.message_id`,
+    [userId]
+  );
+
+  for (const row of result.rows) {
+    const conversation = await pool.query(
+      `SELECT conversation_id FROM messages WHERE id=$1`,
+      [row.message_id]
+    );
+    if (conversation.rows[0]) {
+      io.to(`conversation:${conversation.rows[0].conversation_id}`).emit('message:receipt', {
+        messageId: row.message_id,
+        userId,
+        deliveredAt: new Date().toISOString(),
+      });
+    }
+  }
+}
+
+async function markConversationRead(conversationId, userId) {
+  const result = await pool.query(
+    `UPDATE message_receipts mr
+     SET delivered_at=COALESCE(mr.delivered_at,NOW()),
+         read_at=COALESCE(mr.read_at,NOW())
+     FROM messages m
+     WHERE mr.message_id=m.id
+       AND m.conversation_id=$1
+       AND mr.user_id=$2
+       AND mr.read_at IS NULL
+     RETURNING mr.message_id`,
+    [conversationId, userId]
+  );
+
+  await pool.query(
+    `UPDATE conversation_members
+     SET last_read_at=NOW()
+     WHERE conversation_id=$1 AND user_id=$2`,
+    [conversationId, userId]
+  );
+
+  const now = new Date().toISOString();
+  for (const row of result.rows) {
+    io.to(`conversation:${conversationId}`).emit('message:receipt', {
+      messageId: row.message_id,
+      userId,
+      deliveredAt: now,
+      readAt: now,
+    });
+  }
+
+  return result.rowCount;
+}
+
+async function sendPushToConversationMembers({ conversationId, senderId, title, body, url }) {
+  if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
+
+  const result = await pool.query(
+    `SELECT ps.id,ps.user_id,ps.subscription
+     FROM push_subscriptions ps
+     JOIN conversation_members cm ON cm.user_id=ps.user_id
+     WHERE cm.conversation_id=$1 AND ps.user_id<>$2`,
+    [conversationId, senderId]
+  );
+
+  const payload = JSON.stringify({
+    title,
+    body,
+    url: url || '/',
+    conversationId,
+  });
+
+  await Promise.all(
+    result.rows.map(async row => {
+      if (userIsOnline(row.user_id)) return;
+
+      try {
+        await webpush.sendNotification(row.subscription, payload);
+      } catch (error) {
+        if (error.statusCode === 404 || error.statusCode === 410) {
+          await pool.query(`DELETE FROM push_subscriptions WHERE id=$1`, [row.id]);
+        } else {
+          console.warn('Push error:', error.message);
+        }
+      }
+    })
+  );
 }
 
 async function saveAiAction(message, user) {
@@ -344,6 +547,7 @@ app.get('/api/conversations/:id/messages', authMiddleware, async (req, res) => {
   const before = req.query.before ? new Date(String(req.query.before)) : null;
   const values = [req.params.id, limit];
   let beforeSql = '';
+
   if (before && !Number.isNaN(before.getTime())) {
     values.push(before.toISOString());
     beforeSql = `AND m.created_at < $3`;
@@ -357,7 +561,129 @@ app.get('/api/conversations/:id/messages', authMiddleware, async (req, res) => {
      ORDER BY m.created_at DESC LIMIT $2`,
     values
   );
-  res.json({ ok: true, messages: result.rows.reverse() });
+
+  const messages = [];
+  for (const row of result.rows.reverse()) {
+    messages.push(await hydrateMessage({ ...row, current_user_id: req.auth.sub }));
+  }
+
+  res.json({ ok: true, messages });
+});
+
+app.get('/api/conversations/:id/search', authMiddleware, async (req, res) => {
+  if (!(await isConversationMember(req.params.id, req.auth.sub))) {
+    return res.status(403).json({ ok: false, message: 'Sin acceso' });
+  }
+
+  const query = String(req.query.q || '').trim();
+  if (!query) return res.json({ ok: true, messages: [] });
+
+  const result = await pool.query(
+    `SELECT m.*,u.name AS sender_name
+     FROM messages m
+     LEFT JOIN users u ON u.id=m.sender_id
+     WHERE m.conversation_id=$1
+       AND m.deleted_at IS NULL
+       AND (
+         m.body ILIKE '%' || $2 || '%'
+         OR COALESCE(m.attachment_name,'') ILIKE '%' || $2 || '%'
+       )
+     ORDER BY m.created_at DESC
+     LIMIT 100`,
+    [req.params.id, query]
+  );
+
+  res.json({ ok: true, messages: result.rows });
+});
+
+app.get('/api/push/public-key', authMiddleware, (_req, res) => {
+  res.json({ ok: true, publicKey: VAPID_PUBLIC_KEY || null });
+});
+
+app.post('/api/push/subscribe', authMiddleware, async (req, res) => {
+  const subscription = req.body.subscription;
+  if (!subscription?.endpoint) {
+    return res.status(400).json({ ok: false, message: 'Suscripción inválida' });
+  }
+
+  await pool.query(
+    `INSERT INTO push_subscriptions(user_id,endpoint,subscription)
+     VALUES($1,$2,$3::jsonb)
+     ON CONFLICT(endpoint)
+     DO UPDATE SET
+       user_id=EXCLUDED.user_id,
+       subscription=EXCLUDED.subscription,
+       updated_at=NOW()`,
+    [req.auth.sub, subscription.endpoint, JSON.stringify(subscription)]
+  );
+
+  res.json({ ok: true });
+});
+
+app.post('/api/conversations/:id/read', authMiddleware, async (req, res) => {
+  if (!(await isConversationMember(req.params.id, req.auth.sub))) {
+    return res.status(403).json({ ok: false, message: 'Sin acceso' });
+  }
+
+  const count = await markConversationRead(req.params.id, req.auth.sub);
+  res.json({ ok: true, count });
+});
+
+app.post('/api/messages/:id/reactions', authMiddleware, async (req, res) => {
+  const emoji = String(req.body.emoji || '').trim();
+  if (!emoji || emoji.length > 12) {
+    return res.status(400).json({ ok: false, message: 'Reacción inválida' });
+  }
+
+  const access = await pool.query(
+    `SELECT m.conversation_id
+     FROM messages m
+     JOIN conversation_members cm
+       ON cm.conversation_id=m.conversation_id
+      AND cm.user_id=$2
+     WHERE m.id=$1`,
+    [req.params.id, req.auth.sub]
+  );
+
+  if (!access.rows[0]) {
+    return res.status(403).json({ ok: false, message: 'Sin acceso' });
+  }
+
+  const existing = await pool.query(
+    `SELECT emoji FROM message_reactions WHERE message_id=$1 AND user_id=$2`,
+    [req.params.id, req.auth.sub]
+  );
+
+  if (existing.rows[0]?.emoji === emoji) {
+    await pool.query(
+      `DELETE FROM message_reactions WHERE message_id=$1 AND user_id=$2`,
+      [req.params.id, req.auth.sub]
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO message_reactions(message_id,user_id,emoji)
+       VALUES($1,$2,$3)
+       ON CONFLICT(message_id,user_id)
+       DO UPDATE SET emoji=EXCLUDED.emoji,created_at=NOW()`,
+      [req.params.id, req.auth.sub, emoji]
+    );
+  }
+
+  const reactions = await pool.query(
+    `SELECT emoji,COUNT(*)::int AS count
+     FROM message_reactions
+     WHERE message_id=$1
+     GROUP BY emoji
+     ORDER BY emoji`,
+    [req.params.id]
+  );
+
+  io.to(`conversation:${access.rows[0].conversation_id}`).emit('message:reactions', {
+    messageId: req.params.id,
+    reactions: reactions.rows,
+  });
+
+  res.json({ ok: true, reactions: reactions.rows });
 });
 
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 100 * 1024 * 1024);
@@ -472,6 +798,33 @@ app.post('/api/admin/sync-memberships', authMiddleware, async (req, res) => {
   res.json({ ok: true, admins: admins.rowCount });
 });
 
+app.patch('/api/admin/ai-actions/:id', authMiddleware, async (req, res) => {
+  if (!isAdminRole(req.auth.role)) {
+    return res.status(403).json({ ok: false, message: 'Sin acceso' });
+  }
+
+  const status = String(req.body.status || '').trim().toLowerCase();
+  if (!['pending','approved','dismissed','completed'].includes(status)) {
+    return res.status(400).json({ ok: false, message: 'Estado inválido' });
+  }
+
+  const result = await pool.query(
+    `UPDATE ai_actions
+     SET status=$1,updated_at=NOW()
+     WHERE id=$2
+     RETURNING *`,
+    [status, req.params.id]
+  );
+
+  if (!result.rows[0]) {
+    return res.status(404).json({ ok: false, message: 'Acción no encontrada' });
+  }
+
+  io.to('role:admin').emit('ai-action:update', result.rows[0]);
+  io.to('role:manager').emit('ai-action:update', result.rows[0]);
+  res.json({ ok: true, action: result.rows[0] });
+});
+
 app.get('/api/admin/ai-actions', authMiddleware, async (req, res) => {
   if (!['admin','manager','owner'].includes(String(req.auth.role).toLowerCase())) {
     return res.status(403).json({ ok: false, message: 'Sin acceso' });
@@ -498,6 +851,8 @@ io.use((socket, next) => {
 
 io.on('connection', async (socket) => {
   const userId = socket.auth.sub;
+  const userKey = String(userId);
+  onlineUsers.set(userKey, Number(onlineUsers.get(userKey) || 0) + 1);
   socket.join(`user:${userId}`);
   socket.join(`role:${String(socket.auth.role || '').toLowerCase()}`);
 
@@ -508,6 +863,7 @@ io.on('connection', async (socket) => {
   memberships.rows.forEach((row) => socket.join(`conversation:${row.conversation_id}`));
 
   io.emit('presence:update', { userId, online: true, at: new Date().toISOString() });
+  markDeliveredForUser(userId).catch(error => console.warn('Delivery mark error:', error.message));
 
   socket.on('conversation:join', async ({ conversationId }, callback = () => {}) => {
     try {
@@ -515,6 +871,7 @@ io.on('connection', async (socket) => {
         return callback({ ok: false, message: 'Sin acceso' });
       }
       socket.join(`conversation:${conversationId}`);
+      await markConversationRead(conversationId, userId);
       callback({ ok: true });
     } catch (error) {
       callback({ ok: false, message: error.message });
@@ -576,14 +933,37 @@ io.on('connection', async (socket) => {
       );
 
       await pool.query(`UPDATE conversations SET updated_at=NOW() WHERE id=$1`, [conversationId]);
-      const message = {
+
+      await pool.query(
+        `INSERT INTO message_receipts(message_id,user_id,delivered_at,read_at)
+         SELECT $1,cm.user_id,
+                CASE WHEN $4 THEN NOW() ELSE NULL END,
+                NULL
+         FROM conversation_members cm
+         WHERE cm.conversation_id=$2 AND cm.user_id<>$3
+         ON CONFLICT(message_id,user_id) DO NOTHING`,
+        [result.rows[0].id, conversationId, userId, false]
+      );
+
+      await markMessageDeliveredToOnlineMembers(result.rows[0].id, conversationId, userId);
+
+      const message = await hydrateMessage({
         ...result.rows[0],
         sender_name: socket.auth.name,
         sender_role: socket.auth.role,
-      };
+        current_user_id: userId,
+      });
 
       io.to(`conversation:${conversationId}`).emit('message:new', message);
       callback({ ok: true, message });
+
+      sendPushToConversationMembers({
+        conversationId,
+        senderId: userId,
+        title: socket.auth.name || '417 Maid Chat',
+        body: body || attachment?.name || 'Nuevo archivo',
+        url: `/?conversation=${encodeURIComponent(conversationId)}`,
+      }).catch(error => console.warn('Push send error:', error.message));
 
       setImmediate(() => {
         saveAiAction(message, { id: userId }).catch((error) => {
@@ -596,8 +976,27 @@ io.on('connection', async (socket) => {
     }
   });
 
+  socket.on('conversation:read', async ({ conversationId }, callback = () => {}) => {
+    try {
+      if (!(await isConversationMember(conversationId, userId))) {
+        return callback({ ok: false, message: 'Sin acceso' });
+      }
+      const count = await markConversationRead(conversationId, userId);
+      callback({ ok: true, count });
+    } catch (error) {
+      callback({ ok: false, message: error.message });
+    }
+  });
+
   socket.on('disconnect', () => {
-    io.emit('presence:update', { userId, online: false, at: new Date().toISOString() });
+    const userKey = String(userId);
+    const next = Math.max(0, Number(onlineUsers.get(userKey) || 1) - 1);
+    if (next === 0) {
+      onlineUsers.delete(userKey);
+      io.emit('presence:update', { userId, online: false, at: new Date().toISOString() });
+    } else {
+      onlineUsers.set(userKey, next);
+    }
   });
 });
 
