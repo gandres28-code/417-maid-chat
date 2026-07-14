@@ -27,7 +27,7 @@ function isAdmin(){
 function showApp(){
   $('loginView').classList.add('hidden');
   $('appView').classList.remove('hidden');
-  $('userLabel').textContent=`${state.user.name} · ${state.user.role}`;
+  $('userLabel').textContent=`${state.user.name} Â· ${state.user.role}`;
   $('aiPanel').classList.toggle('hidden',!isAdmin());
   if(isAdmin())loadAiActions();
 }
@@ -68,12 +68,12 @@ async function openConversation(id){
   renderMessages();
   markActiveConversationRead();
 }
-function attachmentHtml(m){if(!m.attachment_url)return'';const url=escapeHtml(m.attachment_url);if(m.message_type==='image')return`<button class="media-open" data-type="image" data-url="${url}"><img src="${url}" alt="imagen" loading="lazy"></button>`;if(m.message_type==='video')return`<video controls preload="metadata" src="${url}"></video>`;if(m.message_type==='audio')return`<audio controls preload="metadata" src="${url}"></audio>`;return`<a class="file-card" target="_blank" rel="noopener" href="${url}"><span>📎</span><div><strong>${escapeHtml(m.attachment_name||'Archivo')}</strong><small>${formatBytes(m.attachment_size)}</small></div></a>`}
+function attachmentHtml(m){if(!m.attachment_url)return'';const url=escapeHtml(m.attachment_url);if(m.message_type==='image')return`<button class="media-open" data-type="image" data-url="${url}"><img src="${url}" alt="imagen" loading="lazy"></button>`;if(m.message_type==='video')return`<video controls preload="metadata" src="${url}"></video>`;if(m.message_type==='audio')return`<audio controls preload="metadata" src="${url}"></audio>`;return`<a class="file-card" target="_blank" rel="noopener" href="${url}"><span>ðŸ“Ž</span><div><strong>${escapeHtml(m.attachment_name||'Archivo')}</strong><small>${formatBytes(m.attachment_size)}</small></div></a>`}
 function messageStatusHtml(m){
   if(m.sender_id!==state.user.id)return'';
-  if(Number(m.read_count||0)>0)return'<span class="checks read">✓✓</span>';
-  if(Number(m.delivered_count||0)>0)return'<span class="checks">✓✓</span>';
-  return'<span class="checks">✓</span>';
+  if(Number(m.read_count||0)>0)return'<span class="checks read">âœ“âœ“</span>';
+  if(Number(m.delivered_count||0)>0)return'<span class="checks">âœ“âœ“</span>';
+  return'<span class="checks">âœ“</span>';
 }
 
 function replyHtml(m){
@@ -140,7 +140,7 @@ function renderMessages(){
     ${attachmentHtml(m)}
     ${m.body?`<div class="message-body">${escapeHtml(m.body)}</div>`:''}
     <div class="message-footer">
-      <button class="message-more" data-message-id="${m.id}" title="Opciones" type="button">⌄</button>
+      <button class="message-more" data-message-id="${m.id}" title="Opciones" type="button">âŒ„</button>
       <span class="message-time">${new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
       ${messageStatusHtml(m)}
     </div>
@@ -228,7 +228,7 @@ function connectSocket(){
 
   state.socket.on('typing:update',e=>{
     if(e.conversationId!==state.active?.id||e.userId===state.user.id)return;
-    $('typingLabel').textContent=e.typing?`${e.name} está escribiendo...`:'';
+    $('typingLabel').textContent=e.typing?`${e.name} estÃ¡ escribiendo...`:'';
   });
 
   state.socket.on('ai-action:new',action=>{
@@ -280,21 +280,21 @@ document.addEventListener('visibilitychange',()=>{
 $('messageInput').addEventListener('input',()=>{if(!state.active||!state.socket)return;state.socket.emit('typing:start',{conversationId:state.active.id});clearTimeout(state.typingTimer);state.typingTimer=setTimeout(()=>state.socket.emit('typing:stop',{conversationId:state.active.id}),700)})
 function sendSocketMessage(body,attachment){return new Promise((resolve,reject)=>{state.socket.emit('message:send',{conversationId:state.active.id,body,attachment},r=>r?.ok?resolve(r):reject(new Error(r?.message||'No se pudo enviar')))} )}
 $('composer').addEventListener('submit',async e=>{e.preventDefault();if(!state.active)return;const body=$('messageInput').value.trim();const ready=state.uploads.filter(x=>x.status==='ready');if(!body&&!ready.length)return;const btn=e.submitter;btn.disabled=true;try{if(ready.length){for(let i=0;i<ready.length;i++){await sendSocketMessage(i===0?body:'',ready[i].attachment)}}else{await sendSocketMessage(body,null)}$('messageInput').value='';state.uploads=[];renderUploadQueue();state.socket.emit('typing:stop',{conversationId:state.active.id})}catch(err){$('uploadStatus').textContent=err.message}finally{btn.disabled=false}})
-function chooseFiles(files){const list=[...files];if(!list.length)return;const available=Math.max(0,state.uploadConfig.maxFilesPerBatch-state.uploads.length);if(list.length>available){$('uploadStatus').textContent=`Máximo ${state.uploadConfig.maxFilesPerBatch} archivos por envío`}list.slice(0,available).forEach(file=>{if(file.size>state.uploadConfig.maxUploadBytes){$('uploadStatus').textContent=`${file.name} supera ${formatBytes(state.uploadConfig.maxUploadBytes)}`;return}state.uploads.push({id:crypto.randomUUID(),file,status:'pending',progress:0,error:'',attachment:null,preview:file.type.startsWith('image/')||file.type.startsWith('video/')?URL.createObjectURL(file):''})});renderUploadQueue();uploadPending()}
-function renderUploadQueue(){const box=$('mediaQueue');if(!state.uploads.length){box.classList.add('hidden');box.innerHTML='';return}box.classList.remove('hidden');box.innerHTML=state.uploads.map(item=>`<div class="upload-item" data-id="${item.id}">${item.preview?(item.file.type.startsWith('video/')?`<video src="${item.preview}" muted></video>`:`<img src="${item.preview}" alt="preview">`):`<div class="file-icon">📎</div>`}<div class="upload-info"><strong>${escapeHtml(item.file.name)}</strong><small>${formatBytes(item.file.size)} · ${item.status==='ready'?'Listo':item.status==='error'?'Error':item.status==='uploading'?`Subiendo ${item.progress}%`:'En cola'}</small><div class="progress"><span style="width:${item.progress}%"></span></div>${item.error?`<em>${escapeHtml(item.error)}</em>`:''}</div><div class="upload-actions">${item.status==='error'?`<button data-action="retry">↻</button>`:''}<button data-action="remove">×</button></div></div>`).join('');box.querySelectorAll('.upload-item').forEach(el=>{el.querySelector('[data-action="remove"]').onclick=()=>removeUpload(el.dataset.id);const retry=el.querySelector('[data-action="retry"]');if(retry)retry.onclick=()=>retryUpload(el.dataset.id)})}
+function chooseFiles(files){const list=[...files];if(!list.length)return;const available=Math.max(0,state.uploadConfig.maxFilesPerBatch-state.uploads.length);if(list.length>available){$('uploadStatus').textContent=`MÃ¡ximo ${state.uploadConfig.maxFilesPerBatch} archivos por envÃ­o`}list.slice(0,available).forEach(file=>{if(file.size>state.uploadConfig.maxUploadBytes){$('uploadStatus').textContent=`${file.name} supera ${formatBytes(state.uploadConfig.maxUploadBytes)}`;return}state.uploads.push({id:crypto.randomUUID(),file,status:'pending',progress:0,error:'',attachment:null,preview:file.type.startsWith('image/')||file.type.startsWith('video/')?URL.createObjectURL(file):''})});renderUploadQueue();uploadPending()}
+function renderUploadQueue(){const box=$('mediaQueue');if(!state.uploads.length){box.classList.add('hidden');box.innerHTML='';return}box.classList.remove('hidden');box.innerHTML=state.uploads.map(item=>`<div class="upload-item" data-id="${item.id}">${item.preview?(item.file.type.startsWith('video/')?`<video src="${item.preview}" muted></video>`:`<img src="${item.preview}" alt="preview">`):`<div class="file-icon">ðŸ“Ž</div>`}<div class="upload-info"><strong>${escapeHtml(item.file.name)}</strong><small>${formatBytes(item.file.size)} Â· ${item.status==='ready'?'Listo':item.status==='error'?'Error':item.status==='uploading'?`Subiendo ${item.progress}%`:'En cola'}</small><div class="progress"><span style="width:${item.progress}%"></span></div>${item.error?`<em>${escapeHtml(item.error)}</em>`:''}</div><div class="upload-actions">${item.status==='error'?`<button data-action="retry">â†»</button>`:''}<button data-action="remove">Ã—</button></div></div>`).join('');box.querySelectorAll('.upload-item').forEach(el=>{el.querySelector('[data-action="remove"]').onclick=()=>removeUpload(el.dataset.id);const retry=el.querySelector('[data-action="retry"]');if(retry)retry.onclick=()=>retryUpload(el.dataset.id)})}
 function removeUpload(id){const item=state.uploads.find(x=>x.id===id);if(item?.preview)URL.revokeObjectURL(item.preview);state.uploads=state.uploads.filter(x=>x.id!==id);renderUploadQueue()}
 function retryUpload(id){const item=state.uploads.find(x=>x.id===id);if(!item)return;item.status='pending';item.error='';item.progress=0;renderUploadQueue();uploadPending()}
 let uploading=false;async function uploadPending(){if(uploading)return;uploading=true;try{for(const item of state.uploads){if(item.status!=='pending')continue;item.status='uploading';renderUploadQueue();try{item.attachment=await uploadFile(item);item.status='ready';item.progress=100}catch(err){item.status='error';item.error=err.message}renderUploadQueue()}}finally{uploading=false}}
-function uploadFile(item){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST','/api/upload');xhr.setRequestHeader('Authorization',`Bearer ${state.token}`);xhr.upload.onprogress=e=>{if(e.lengthComputable){item.progress=Math.round(e.loaded/e.total*100);renderUploadQueue()}};xhr.onload=()=>{let d={};try{d=JSON.parse(xhr.responseText||'{}')}catch{}if(xhr.status>=200&&xhr.status<300&&d.ok)resolve(d.attachment);else reject(new Error(d.message||`Error ${xhr.status}`))};xhr.onerror=()=>reject(new Error('Se perdió la conexión durante la subida'));const fd=new FormData();fd.append('file',item.file);xhr.send(fd)})}
+function uploadFile(item){return new Promise((resolve,reject)=>{const xhr=new XMLHttpRequest();xhr.open('POST','/api/upload');xhr.setRequestHeader('Authorization',`Bearer ${state.token}`);xhr.upload.onprogress=e=>{if(e.lengthComputable){item.progress=Math.round(e.loaded/e.total*100);renderUploadQueue()}};xhr.onload=()=>{let d={};try{d=JSON.parse(xhr.responseText||'{}')}catch{}if(xhr.status>=200&&xhr.status<300&&d.ok)resolve(d.attachment);else reject(new Error(d.message||`Error ${xhr.status}`))};xhr.onerror=()=>reject(new Error('Se perdiÃ³ la conexiÃ³n durante la subida'));const fd=new FormData();fd.append('file',item.file);xhr.send(fd)})}
 ['cameraInput','mediaInput','documentInput'].forEach(id=>$(id).addEventListener('change',e=>{chooseFiles(e.target.files);e.target.value='';$('attachMenu').classList.add('hidden')}));
 $('attachMenuBtn').onclick=()=>{if(!state.active)return;$('attachMenu').classList.toggle('hidden')};document.addEventListener('click',e=>{if(!$('attachMenu').contains(e.target)&&e.target!==$('attachMenuBtn'))$('attachMenu').classList.add('hidden')});
 function openViewer(type,url){$('viewerContent').innerHTML=type==='image'?`<img src="${escapeHtml(url)}" alt="imagen">`:`<video controls autoplay src="${escapeHtml(url)}"></video>`;$('mediaViewer').classList.remove('hidden')}
 function closeViewer(){$('mediaViewer').classList.add('hidden');$('viewerContent').innerHTML=''}$('closeViewer').onclick=closeViewer;$('mediaViewer').onclick=e=>{if(e.target===$('mediaViewer'))closeViewer()};
-$('backBtn').onclick=()=>$('appView').classList.remove('chat-open');$('callBtn').onclick=()=>alert('Las llamadas se agregarán con LiveKit después de estabilizar mensajes y multimedia.');
+$('backBtn').onclick=()=>$('appView').classList.remove('chat-open');$('callBtn').onclick=()=>alert('Las llamadas se agregarÃ¡n con LiveKit despuÃ©s de estabilizar mensajes y multimedia.');
 
 // =========================================================
 // GRABADOR DE AUDIO TIPO WHATSAPP
-// Al tocar Enviar, el audio se sube y se manda automáticamente.
+// Al tocar Enviar, el audio se sube y se manda automÃ¡ticamente.
 // =========================================================
 const recorderState={
   audioRecorder:null,
@@ -335,7 +335,7 @@ function stopTracks(stream){
 }
 
 async function uploadAndSendRecordedAudio(file){
-  if(!state.active)throw new Error('Abre una conversación primero');
+  if(!state.active)throw new Error('Abre una conversaciÃ³n primero');
 
   const item={
     id:crypto.randomUUID(),
@@ -448,8 +448,8 @@ async function startAudioRecording(){
     document.body.classList.add('recording-audio');
     $('voiceRecordBtn').classList.add('recording');
     $('audioRecorderBar').classList.remove('hidden');
-    $('recordHint').textContent='Desliza para cancelar ‹';
-    $('recordLockHint').textContent='⌃';
+    $('recordHint').textContent='Desliza para cancelar â€¹';
+    $('recordLockHint').textContent='âŒƒ';
     $('audioTimer').textContent='00:00';
 
     recorderState.audioTimerId=setInterval(()=>{
@@ -459,8 +459,8 @@ async function startAudioRecording(){
     },250);
   }catch(error){
     $('uploadStatus').textContent=error?.name==='NotAllowedError'
-      ?'Permite acceso al micrófono en Safari para grabar audio.'
-      :(error.message||'No se pudo abrir el micrófono');
+      ?'Permite acceso al micrÃ³fono en Safari para grabar audio.'
+      :(error.message||'No se pudo abrir el micrÃ³fono');
   }
 }
 
@@ -520,8 +520,8 @@ function moveVoiceGesture(event){
   bar.style.setProperty('--record-dx',`${Math.min(0,dx)}px`);
   bar.classList.toggle('cancel-ready',dx<-55);
   bar.classList.toggle('lock-ready',dy<-55);
-  $('recordHint').textContent=dx<-55?'Suelta para cancelar':'Desliza para cancelar ‹';
-  $('recordLockHint').textContent=dy<-55?'🔒':'⌃';
+  $('recordHint').textContent=dx<-55?'Suelta para cancelar':'Desliza para cancelar â€¹';
+  $('recordLockHint').textContent=dy<-55?'ðŸ”’':'âŒƒ';
 
   if(dx<-105){
     voiceGesture.active=false;
@@ -535,8 +535,8 @@ function moveVoiceGesture(event){
     bar.classList.add('locked');
     bar.classList.remove('lock-ready');
     bar.style.removeProperty('--record-dx');
-    $('recordHint').textContent='Grabación bloqueada';
-    $('recordLockHint').textContent='🔒';
+    $('recordHint').textContent='GrabaciÃ³n bloqueada';
+    $('recordLockHint').textContent='ðŸ”’';
   }
 }
 
@@ -750,7 +750,7 @@ function renderAiActions(){
         <strong>${escapeHtml(a.unit||'Sin unidad')}</strong>
         <span>${escapeHtml(a.priority||'Normal')}</span>
       </div>
-      <small>${escapeHtml(a.requester_name||'Empleado')} · ${escapeHtml(a.department||'Operations')}</small>
+      <small>${escapeHtml(a.requester_name||'Empleado')} Â· ${escapeHtml(a.department||'Operations')}</small>
       <p>${escapeHtml(a.summary||'')}</p>
       <div class="ai-action-buttons">
         <button data-status="approved" data-id="${a.id}">Aprobar</button>
@@ -790,7 +790,35 @@ document.querySelectorAll('[data-ai-filter]').forEach(btn=>{
 
 $('closeAiPanelBtn').onclick=()=>$('aiPanel').classList.toggle('hidden');
 
-if('serviceWorker' in navigator){
-  window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}));
+async function refreshApplicationShell(){
+  try{
+    if('caches' in window){
+      const keys=await caches.keys();
+      await Promise.all(keys.filter(key=>!key.includes('v9')).map(key=>caches.delete(key)));
+    }
+
+    if('serviceWorker' in navigator){
+      const registrations=await navigator.serviceWorker.getRegistrations();
+      for(const registration of registrations){
+        await registration.update().catch(()=>{});
+      }
+
+      await navigator.serviceWorker.register('/sw-v9.js?v=9.0.1',{updateViaCache:'none'});
+    }
+  }catch(error){
+    console.warn('App refresh warning:',error.message);
+  }
 }
+
+window.addEventListener('load',refreshApplicationShell);
 bootstrap();
+
+
+window.addEventListener('load',async()=>{
+  try{
+    const response=await fetch('/api/version?t='+Date.now(),{cache:'no-store'});
+    const data=await response.json();
+    const el=document.getElementById('appVersion');
+    if(el)el.textContent=`v${data.version||'9.0.1'}`;
+  }catch{}
+});
