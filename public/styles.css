@@ -15,3 +15,41 @@
   .composer{gap:7px;padding:9px}
   .attach-btn,.send-btn,.voice-btn{width:41px;height:41px}
 }
+
+
+/* Menú de adjuntos limpio y familiar */
+.attach-menu{
+  display:grid;
+  gap:5px;
+  min-width:235px;
+  padding:9px;
+}
+.attach-option{
+  display:flex !important;
+  align-items:center;
+  gap:13px;
+  padding:13px 14px !important;
+  border-radius:12px;
+  cursor:pointer;
+  color:#e9edef;
+}
+.attach-option:hover,.attach-option:active{background:#2a3942}
+.attach-icon{
+  width:38px;
+  height:38px;
+  display:grid;
+  place-items:center;
+  border-radius:999px;
+  background:#233138;
+  font-size:20px;
+}
+
+/* Grabación tipo WhatsApp */
+.voice-btn{touch-action:none;user-select:none;-webkit-user-select:none}
+.recorder-bar.locked{box-shadow:inset 0 0 0 1px rgba(0,168,132,.6)}
+.recorder-bar.locked .recorder-label::after{content:" · bloqueado";color:#00a884;font-weight:800}
+
+/* Sensación de app nativa */
+html,body{overscroll-behavior:none}
+button,label{-webkit-tap-highlight-color:transparent}
+.message-list{scroll-behavior:smooth}
