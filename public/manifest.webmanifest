@@ -1,0 +1,16 @@
+{
+  "name": "417 Maid Chat",
+  "short_name": "417 Chat",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b141a",
+  "theme_color": "#0b141a",
+  "description": "Chat interno de 417 Maid",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
