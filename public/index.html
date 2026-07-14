@@ -42,7 +42,12 @@
         <button id="notificationsBtn" class="icon-btn" title="Activar notificaciones">🔔</button>
       </header>
 
-      <div id="messageList" class="message-list"><div class="empty">Selecciona una conversación.</div></div>
+      <div class="messages-stage">
+        <div id="messageList" class="message-list"><div class="empty">Selecciona una conversación.</div></div>
+        <button id="scrollBottomBtn" class="scroll-bottom hidden" type="button" aria-label="Ir al mensaje más reciente">
+          ↓ <span id="newMessageCount" class="new-message-count hidden">0</span>
+        </button>
+      </div>
 
       <section id="mediaQueue" class="media-queue hidden"></section>
 
@@ -62,11 +67,15 @@
       </form>
 
       <div id="audioRecorderBar" class="recorder-bar hidden">
+        <button id="cancelAudioBtn" type="button" class="record-cancel" aria-label="Cancelar">🗑</button>
         <span class="record-dot"></span>
         <strong id="audioTimer">00:00</strong>
-        <span class="recorder-label">Grabando audio...</span>
-        <button id="cancelAudioBtn" type="button">Cancelar</button>
-        <button id="finishAudioBtn" type="button" class="finish-record">Enviar</button>
+        <div class="audio-wave" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+        <span id="recordHint" class="record-hint">Desliza para cancelar ‹</span>
+        <span id="recordLockHint" class="record-lock-hint">⌃</span>
+        <button id="finishAudioBtn" type="button" class="finish-record" aria-label="Enviar audio">➤</button>
       </div>
 
       <div id="attachMenu" class="attach-menu hidden">
@@ -117,13 +126,17 @@
     </div>
   </div>
 
-  <div id="reactionPicker" class="reaction-picker hidden">
-    <button id="replyFromPickerBtn" class="reply-picker-btn" title="Responder">↩</button>
-    <button data-emoji="👍">👍</button>
-    <button data-emoji="❤️">❤️</button>
-    <button data-emoji="✅">✅</button>
-    <button data-emoji="⚠️">⚠️</button>
-    <button data-emoji="👀">👀</button>
+  <div id="reactionOverlay" class="reaction-overlay hidden">
+    <button id="reactionBackdrop" class="reaction-backdrop" type="button" aria-label="Cerrar reacciones"></button>
+    <div id="reactionPicker" class="reaction-picker" role="dialog" aria-modal="true">
+      <button id="closeReactionBtn" class="reaction-close" type="button" aria-label="Cerrar">×</button>
+      <button id="replyFromPickerBtn" class="reply-picker-btn" type="button" title="Responder">↩</button>
+      <button data-emoji="👍" type="button">👍</button>
+      <button data-emoji="❤️" type="button">❤️</button>
+      <button data-emoji="✅" type="button">✅</button>
+      <button data-emoji="⚠️" type="button">⚠️</button>
+      <button data-emoji="👀" type="button">👀</button>
+    </div>
   </div>
 
   <div id="mediaViewer" class="media-viewer hidden">
