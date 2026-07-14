@@ -23,3 +23,34 @@ self.addEventListener('fetch',event=>{
       .catch(()=>caches.match(event.request))
   );
 });
+
+self.addEventListener('push',event=>{
+  let data={};
+  try{data=event.data?.json?.()||{}}catch{}
+  event.waitUntil(
+    self.registration.showNotification(data.title||'417 Maid Chat',{
+      body:data.body||'Nuevo mensaje',
+      icon:'/icon.svg',
+      badge:'/icon.svg',
+      data:{url:data.url||'/'},
+      tag:data.conversationId||'417-maid-chat',
+      renotify:true
+    })
+  );
+});
+
+self.addEventListener('notificationclick',event=>{
+  event.notification.close();
+  const url=event.notification.data?.url||'/';
+  event.waitUntil(
+    clients.matchAll({type:'window',includeUncontrolled:true}).then(windowClients=>{
+      for(const client of windowClients){
+        if('focus'in client){
+          client.navigate(url);
+          return client.focus();
+        }
+      }
+      return clients.openWindow(url);
+    })
+  );
+});
