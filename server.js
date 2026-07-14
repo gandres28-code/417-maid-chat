@@ -419,11 +419,9 @@ app.post('/api/upload', authMiddleware, upload.single('file'), async (req, res) 
         overwrite: false,
         unique_filename: true,
         use_filename: false,
+        invalidate: false,
+        context: `original_filename=${encodeURIComponent(req.file.originalname || 'file')}`,
       };
-
-      if (resourceType === 'image') {
-        options.transformation = [{ quality: 'auto', fetch_format: 'auto' }];
-      }
 
       const stream = cloudinary.uploader.upload_stream(
         options,
