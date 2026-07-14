@@ -12,7 +12,9 @@ const state={
   reactionTarget:null,
   onlineUsers:new Set(),
   aiActions:[],
-  aiFilter:'pending'
+  aiFilter:'pending',
+  unreadWhileScrolled:0,
+  forceScrollOnNextRender:false
 };
 const $=id=>document.getElementById(id);
 function api(path,options={}){return fetch(path,{...options,headers:{...(options.body instanceof FormData?{}:{'Content-Type':'application/json'}),...(state.token?{Authorization:`Bearer ${state.token}`}:{}) ,...(options.headers||{})}}).then(async r=>{const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.message||`Error ${r.status}`);return d})}
@@ -61,6 +63,8 @@ async function openConversation(id){
   state.socket?.emit('conversation:join',{conversationId:id});
   const d=await api(`/api/conversations/${id}/messages`);
   state.messages=d.messages;
+  state.unreadWhileScrolled=0;
+  state.forceScrollOnNextRender=true;
   renderMessages();
   markActiveConversationRead();
 }
@@ -86,15 +90,57 @@ function reactionsHtml(m){
   return `<div class="message-reactions">${reactions.map(r=>`<button data-message="${m.id}" data-emoji="${escapeHtml(r.emoji)}">${escapeHtml(r.emoji)} <span>${Number(r.count||0)}</span></button>`).join('')}</div>`;
 }
 
+
+function isNearBottom(list=$('messageList'),threshold=120){
+  return list.scrollHeight-list.scrollTop-list.clientHeight<=threshold;
+}
+
+function scrollToBottom({smooth=false}={}){
+  const list=$('messageList');
+  requestAnimationFrame(()=>{
+    list.scrollTo({
+      top:list.scrollHeight,
+      behavior:smooth?'smooth':'auto'
+    });
+    state.unreadWhileScrolled=0;
+    updateScrollBottomButton();
+  });
+}
+
+function updateScrollBottomButton(){
+  const near=isNearBottom();
+  $('scrollBottomBtn').classList.toggle('hidden',near);
+  $('newMessageCount').textContent=String(state.unreadWhileScrolled||0);
+  $('newMessageCount').classList.toggle('hidden',!state.unreadWhileScrolled);
+}
+
+function preserveScrollAndRender(renderFn){
+  const list=$('messageList');
+  const near=isNearBottom(list);
+  const oldBottom=list.scrollHeight-list.scrollTop;
+  renderFn();
+  requestAnimationFrame(()=>{
+    if(near||state.forceScrollOnNextRender){
+      state.forceScrollOnNextRender=false;
+      scrollToBottom();
+    }else{
+      list.scrollTop=Math.max(0,list.scrollHeight-oldBottom);
+      updateScrollBottomButton();
+    }
+  });
+}
+
 function renderMessages(){
   const list=$('messageList');
+  const wasNearBottom=isNearBottom(list);
+
   list.innerHTML=state.messages.map(m=>`<article id="message-${m.id}" class="message ${m.sender_id===state.user.id?'mine':''}" data-message-id="${m.id}">
     ${m.sender_id!==state.user.id?`<div class="message-name">${escapeHtml(m.sender_name||'Usuario')}</div>`:''}
     ${replyHtml(m)}
     ${attachmentHtml(m)}
     ${m.body?`<div class="message-body">${escapeHtml(m.body)}</div>`:''}
     <div class="message-footer">
-      <button class="message-more" data-message-id="${m.id}" title="Opciones">⌄</button>
+      <button class="message-more" data-message-id="${m.id}" title="Opciones" type="button">⌄</button>
       <span class="message-time">${new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
       ${messageStatusHtml(m)}
     </div>
@@ -104,8 +150,22 @@ function renderMessages(){
   list.querySelectorAll('.media-open').forEach(btn=>btn.onclick=()=>openViewer(btn.dataset.type,btn.dataset.url));
   list.querySelectorAll('.reply-quote').forEach(btn=>btn.onclick=()=>jumpToMessage(btn.dataset.jump));
   list.querySelectorAll('.message-more').forEach(btn=>btn.onclick=e=>openMessageMenu(e,btn.dataset.messageId));
-  list.querySelectorAll('.message-reactions button').forEach(btn=>btn.onclick=()=>toggleReaction(btn.dataset.message,btn.dataset.emoji));
-  list.scrollTop=list.scrollHeight;
+  list.querySelectorAll('.message-reactions button').forEach(btn=>btn.onclick=e=>{
+    e.stopPropagation();
+    toggleReaction(btn.dataset.message,btn.dataset.emoji);
+  });
+
+  list.querySelectorAll('img,video,audio').forEach(media=>{
+    media.addEventListener('loadedmetadata',()=>{if(wasNearBottom)scrollToBottom()},{once:true});
+    media.addEventListener('load',()=>{if(wasNearBottom)scrollToBottom()},{once:true});
+  });
+
+  if(state.forceScrollOnNextRender||wasNearBottom){
+    state.forceScrollOnNextRender=false;
+    scrollToBottom();
+  }else{
+    updateScrollBottomButton();
+  }
 }
 
 function jumpToMessage(id){
@@ -127,8 +187,17 @@ function connectSocket(){
       c.last_message_at=m.created_at;
       renderConversations();
     }
+
     if(state.active?.id===m.conversation_id&&!state.messages.some(x=>x.id===m.id)){
+      const near=isNearBottom();
       state.messages.push(m);
+
+      if(m.sender_id===state.user.id||near){
+        state.forceScrollOnNextRender=true;
+      }else{
+        state.unreadWhileScrolled+=1;
+      }
+
       renderMessages();
       markActiveConversationRead();
     }
@@ -137,16 +206,17 @@ function connectSocket(){
   state.socket.on('message:receipt',receipt=>{
     const m=state.messages.find(x=>x.id===receipt.messageId);
     if(!m)return;
-    if(receipt.readAt)m.read_count=Number(m.read_count||0)+1;
-    else if(receipt.deliveredAt)m.delivered_count=Number(m.delivered_count||0)+1;
-    renderMessages();
+    m.read_count=Number(receipt.readCount||0);
+    m.delivered_count=Number(receipt.deliveredCount||0);
+    m.receipt_count=Number(receipt.receiptCount||0);
+    preserveScrollAndRender(renderMessages);
   });
 
   state.socket.on('message:reactions',event=>{
     const m=state.messages.find(x=>x.id===event.messageId);
     if(!m)return;
     m.reactions=event.reactions||[];
-    renderMessages();
+    preserveScrollAndRender(renderMessages);
   });
 
   state.socket.on('presence:update',event=>{
@@ -176,10 +246,36 @@ function connectSocket(){
 }
 
 async function markActiveConversationRead(){
-  if(!state.active)return;
-  state.socket?.emit('conversation:read',{conversationId:state.active.id});
-  try{await api(`/api/conversations/${state.active.id}/read`,{method:'POST',body:'{}'})}catch{}
+  if(!state.active||document.hidden)return;
+  state.socket?.emit(
+    'conversation:read',
+    {conversationId:state.active.id},
+    response=>{
+      if(!response?.ok)return;
+    }
+  );
 }
+
+$('messageList').addEventListener('scroll',()=>{
+  updateScrollBottomButton();
+  if(isNearBottom()){
+    state.unreadWhileScrolled=0;
+    updateScrollBottomButton();
+    markActiveConversationRead();
+  }
+},{passive:true});
+
+$('scrollBottomBtn').onclick=()=>{
+  scrollToBottom({smooth:true});
+  markActiveConversationRead();
+};
+
+document.addEventListener('visibilitychange',()=>{
+  if(!document.hidden&&state.active){
+    scrollToBottom();
+    markActiveConversationRead();
+  }
+});
 
 $('messageInput').addEventListener('input',()=>{if(!state.active||!state.socket)return;state.socket.emit('typing:start',{conversationId:state.active.id});clearTimeout(state.typingTimer);state.typingTimer=setTimeout(()=>state.socket.emit('typing:stop',{conversationId:state.active.id}),700)})
 function sendSocketMessage(body,attachment){return new Promise((resolve,reject)=>{state.socket.emit('message:send',{conversationId:state.active.id,body,attachment},r=>r?.ok?resolve(r):reject(new Error(r?.message||'No se pudo enviar')))} )}
@@ -318,6 +414,9 @@ async function startAudioRecording(){
       recorderState.audioRecorder=null;
       recorderState.audioChunks=[];
       $('audioRecorderBar').classList.add('hidden');
+      $('audioRecorderBar').classList.remove('locked','cancel-ready','lock-ready');
+      $('voiceRecordBtn').classList.remove('recording');
+      document.body.classList.remove('recording-audio');
 
       if(recorderState.audioCancelled||!blob.size){
         recorderState.audioCancelled=false;
@@ -346,7 +445,11 @@ async function startAudioRecording(){
     recorderState.audioStartedAt=Date.now();
     recorderState.audioRecorder.start(250);
 
+    document.body.classList.add('recording-audio');
+    $('voiceRecordBtn').classList.add('recording');
     $('audioRecorderBar').classList.remove('hidden');
+    $('recordHint').textContent='Desliza para cancelar ‹';
+    $('recordLockHint').textContent='⌃';
     $('audioTimer').textContent='00:00';
 
     recorderState.audioTimerId=setInterval(()=>{
@@ -367,6 +470,8 @@ function finishAudioRecording(cancel=false){
 
   recorderState.audioCancelled=cancel;
   recorderState.audioSending=!cancel;
+  $('audioRecorderBar').style.removeProperty('--record-dx');
+  $('audioRecorderBar').classList.remove('cancel-ready','lock-ready');
 
   if(!cancel){
     $('finishAudioBtn').disabled=true;
@@ -410,18 +515,28 @@ function moveVoiceGesture(event){
   if(!voiceGesture.active||voiceGesture.locked)return;
   const dx=event.clientX-voiceGesture.startX;
   const dy=event.clientY-voiceGesture.startY;
+  const bar=$('audioRecorderBar');
 
-  if(dx<-85){
+  bar.style.setProperty('--record-dx',`${Math.min(0,dx)}px`);
+  bar.classList.toggle('cancel-ready',dx<-55);
+  bar.classList.toggle('lock-ready',dy<-55);
+  $('recordHint').textContent=dx<-55?'Suelta para cancelar':'Desliza para cancelar ‹';
+  $('recordLockHint').textContent=dy<-55?'🔒':'⌃';
+
+  if(dx<-105){
     voiceGesture.active=false;
     finishAudioRecording(true);
     $('uploadStatus').textContent='Audio cancelado';
     return;
   }
 
-  if(dy<-85){
+  if(dy<-105){
     voiceGesture.locked=true;
-    $('audioRecorderBar').classList.add('locked');
-    $('uploadStatus').textContent='Grabación bloqueada. Toca Enviar cuando termines.';
+    bar.classList.add('locked');
+    bar.classList.remove('lock-ready');
+    bar.style.removeProperty('--record-dx');
+    $('recordHint').textContent='Grabación bloqueada';
+    $('recordLockHint').textContent='🔒';
   }
 }
 
@@ -479,14 +594,17 @@ function clearReply(){
 
 $('cancelReplyBtn').onclick=clearReply;
 
+function closeReactionPicker(){
+  $('reactionOverlay').classList.add('hidden');
+  state.reactionTarget=null;
+}
+
 function openMessageMenu(event,messageId){
+  event.preventDefault();
   event.stopPropagation();
   state.reactionTarget=messageId;
-  const picker=$('reactionPicker');
-  picker.dataset.messageId=messageId;
-  picker.classList.remove('hidden');
-  picker.style.left=`${Math.min(window.innerWidth-300,Math.max(10,event.clientX-120))}px`;
-  picker.style.top=`${Math.max(10,event.clientY-70)}px`;
+  $('reactionPicker').dataset.messageId=messageId;
+  $('reactionOverlay').classList.remove('hidden');
 }
 
 async function toggleReaction(messageId,emoji){
@@ -497,7 +615,7 @@ async function toggleReaction(messageId,emoji){
     });
     const m=state.messages.find(x=>x.id===messageId);
     if(m)m.reactions=d.reactions||[];
-    renderMessages();
+    preserveScrollAndRender(renderMessages);
   }catch(error){
     $('uploadStatus').textContent=error.message;
   }
@@ -506,22 +624,23 @@ async function toggleReaction(messageId,emoji){
 $('replyFromPickerBtn').onclick=()=>{
   const messageId=$('reactionPicker').dataset.messageId||state.reactionTarget;
   const message=state.messages.find(x=>x.id===messageId);
-  $('reactionPicker').classList.add('hidden');
+  closeReactionPicker();
   if(message)setReply(message);
 };
 
 $('reactionPicker').querySelectorAll('[data-emoji]').forEach(btn=>{
   btn.onclick=()=>{
     const messageId=$('reactionPicker').dataset.messageId||state.reactionTarget;
-    $('reactionPicker').classList.add('hidden');
+    closeReactionPicker();
     toggleReaction(messageId,btn.dataset.emoji);
   };
 });
 
-document.addEventListener('click',event=>{
-  if(!$('reactionPicker').contains(event.target)){
-    $('reactionPicker').classList.add('hidden');
-  }
+$('reactionBackdrop').onclick=closeReactionPicker;
+$('closeReactionBtn').onclick=closeReactionPicker;
+$('reactionPicker').onclick=event=>event.stopPropagation();
+document.addEventListener('keydown',event=>{
+  if(event.key==='Escape')closeReactionPicker();
 });
 
 $('searchMessagesBtn').onclick=()=>{
