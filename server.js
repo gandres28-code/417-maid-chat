@@ -258,6 +258,27 @@ async function createReceipts(messageId, conversationId, senderId) {
 }
 
 
+
+async function emitMessageReceiptSummary(messageId, conversationId) {
+  const result = await pool.query(
+    `SELECT
+       COUNT(*) FILTER (WHERE delivered_at IS NOT NULL)::int AS delivered_count,
+       COUNT(*) FILTER (WHERE read_at IS NOT NULL)::int AS read_count,
+       COUNT(*)::int AS receipt_count
+     FROM message_receipts
+     WHERE message_id=$1`,
+    [messageId]
+  );
+
+  const summary = result.rows[0] || {};
+  io.to(`conversation:${conversationId}`).emit('message:receipt', {
+    messageId,
+    deliveredCount: Number(summary.delivered_count || 0),
+    readCount: Number(summary.read_count || 0),
+    receiptCount: Number(summary.receipt_count || 0),
+  });
+}
+
 async function markMessageDeliveredToOnlineMembers(messageId, conversationId, senderId) {
   const members = await pool.query(
     `SELECT user_id
@@ -281,12 +302,8 @@ async function markMessageDeliveredToOnlineMembers(messageId, conversationId, se
     [messageId, onlineIds]
   );
 
-  for (const row of result.rows) {
-    io.to(`conversation:${conversationId}`).emit('message:receipt', {
-      messageId,
-      userId: row.user_id,
-      deliveredAt: row.delivered_at,
-    });
+  if (result.rowCount > 0) {
+    await emitMessageReceiptSummary(messageId, conversationId);
   }
 }
 
@@ -308,11 +325,10 @@ async function markDeliveredForUser(userId) {
       [row.message_id]
     );
     if (conversation.rows[0]) {
-      io.to(`conversation:${conversation.rows[0].conversation_id}`).emit('message:receipt', {
-        messageId: row.message_id,
-        userId,
-        deliveredAt: new Date().toISOString(),
-      });
+      await emitMessageReceiptSummary(
+        row.message_id,
+        conversation.rows[0].conversation_id
+      );
     }
   }
 }
@@ -338,14 +354,8 @@ async function markConversationRead(conversationId, userId) {
     [conversationId, userId]
   );
 
-  const now = new Date().toISOString();
   for (const row of result.rows) {
-    io.to(`conversation:${conversationId}`).emit('message:receipt', {
-      messageId: row.message_id,
-      userId,
-      deliveredAt: now,
-      readAt: now,
-    });
+    await emitMessageReceiptSummary(row.message_id, conversationId);
   }
 
   return result.rowCount;
