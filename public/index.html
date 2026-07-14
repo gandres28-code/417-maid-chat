@@ -34,13 +34,25 @@
     <section class="chat-panel">
       <header class="chat-head">
         <button id="backBtn" class="mobile-back">‹</button>
-        <div><strong id="conversationTitle">Selecciona un chat</strong><small id="typingLabel"></small></div>
-        <button id="callBtn" class="icon-btn" title="Llamadas en próxima fase">☎</button>
+        <div class="chat-title-wrap">
+          <strong id="conversationTitle">Selecciona un chat</strong>
+          <small id="typingLabel"></small>
+        </div>
+        <button id="searchMessagesBtn" class="icon-btn" title="Buscar">⌕</button>
+        <button id="notificationsBtn" class="icon-btn" title="Activar notificaciones">🔔</button>
       </header>
 
       <div id="messageList" class="message-list"><div class="empty">Selecciona una conversación.</div></div>
 
       <section id="mediaQueue" class="media-queue hidden"></section>
+
+      <div id="replyPreview" class="reply-preview hidden">
+        <div>
+          <strong id="replyAuthor"></strong>
+          <span id="replyText"></span>
+        </div>
+        <button id="cancelReplyBtn" type="button">×</button>
+      </div>
 
       <form id="composer" class="composer hidden">
         <button id="attachMenuBtn" type="button" class="attach-btn" title="Adjuntar">＋</button>
@@ -77,7 +89,42 @@
 
       <div id="uploadStatus" class="upload-status"></div>
     </section>
+
+    <aside id="aiPanel" class="ai-panel hidden">
+      <header>
+        <div>
+          <strong>AI Operations</strong>
+          <small>Acciones detectadas</small>
+        </div>
+        <button id="closeAiPanelBtn" type="button">×</button>
+      </header>
+      <div class="ai-filter-row">
+        <button data-ai-filter="pending" class="active">Pendientes</button>
+        <button data-ai-filter="all">Todas</button>
+      </div>
+      <div id="aiActionList" class="ai-action-list"></div>
+    </aside>
   </main>
+
+  <div id="searchModal" class="search-modal hidden">
+    <div class="search-card">
+      <header>
+        <strong>Buscar mensajes</strong>
+        <button id="closeSearchBtn" type="button">×</button>
+      </header>
+      <input id="messageSearchInput" placeholder="Escribe una palabra, unidad o archivo">
+      <div id="messageSearchResults" class="message-search-results"></div>
+    </div>
+  </div>
+
+  <div id="reactionPicker" class="reaction-picker hidden">
+    <button id="replyFromPickerBtn" class="reply-picker-btn" title="Responder">↩</button>
+    <button data-emoji="👍">👍</button>
+    <button data-emoji="❤️">❤️</button>
+    <button data-emoji="✅">✅</button>
+    <button data-emoji="⚠️">⚠️</button>
+    <button data-emoji="👀">👀</button>
+  </div>
 
   <div id="mediaViewer" class="media-viewer hidden">
     <button id="closeViewer" class="viewer-close">×</button>
