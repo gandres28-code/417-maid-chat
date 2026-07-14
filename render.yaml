@@ -1,0 +1,28 @@
+services:
+  - type: web
+    name: 417-maid-chat
+    runtime: node
+    buildCommand: yarn install && yarn db:init
+    startCommand: yarn start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OS_BASE_URL
+        value: https://bot-dispatch.onrender.com
+      - key: ADMIN_CODES
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: MAX_UPLOAD_BYTES
+        value: "104857600"
+      - key: MAX_FILES_PER_BATCH
+        value: "10"
