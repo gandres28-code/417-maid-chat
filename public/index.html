@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0b141a">
   <title>417 Maid Chat</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/icon.svg">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -56,12 +58,21 @@
       </div>
 
       <div id="attachMenu" class="attach-menu hidden">
-        <label>📷 Tomar foto<input id="cameraInput" type="file" accept="image/*" capture="environment" hidden></label>
-        <button id="recordVideoBtn" type="button">🎥 Grabar video HD</button>
-        <label>🖼 Fotos y videos originales<input id="mediaInput" type="file" accept="image/*,video/*" multiple hidden></label>
-        <label>🎧 Subir audio<input id="audioInput" type="file" accept="audio/*" multiple hidden></label>
-        <label>📎 Documento<input id="documentInput" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip" multiple hidden></label>
-        <input id="videoFallbackInput" type="file" accept="video/*" capture="environment" hidden>
+        <label class="attach-option">
+          <span class="attach-icon">📷</span>
+          <span>Cámara</span>
+          <input id="cameraInput" type="file" accept="image/*,video/*" capture="environment" hidden>
+        </label>
+        <label class="attach-option">
+          <span class="attach-icon">🖼</span>
+          <span>Fotos y videos</span>
+          <input id="mediaInput" type="file" accept="image/*,video/*" multiple hidden>
+        </label>
+        <label class="attach-option">
+          <span class="attach-icon">📎</span>
+          <span>Documento</span>
+          <input id="documentInput" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip" multiple hidden>
+        </label>
       </div>
 
       <div id="uploadStatus" class="upload-status"></div>
