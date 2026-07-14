@@ -95,3 +95,37 @@ CREATE TABLE IF NOT EXISTS ai_actions (
 
 CREATE INDEX IF NOT EXISTS idx_ai_actions_status_created
   ON ai_actions(status, created_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS message_reactions (
+  message_id UUID NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  emoji TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (message_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_message_reactions_message
+  ON message_reactions(message_id);
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  subscription JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user
+  ON push_subscriptions(user_id);
+
+ALTER TABLE conversation_members
+  ADD COLUMN IF NOT EXISTS last_read_at TIMESTAMPTZ;
+
+ALTER TABLE messages
+  ADD COLUMN IF NOT EXISTS client_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_id
+  ON messages(client_id)
+  WHERE client_id IS NOT NULL;
